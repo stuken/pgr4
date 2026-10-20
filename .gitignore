@@ -1,0 +1,9 @@
+/assets/
+/update/
+/src/*.generated.*
+/out/
+
+.vs/*
+scratch
+__pycache__/
+*.rdc
