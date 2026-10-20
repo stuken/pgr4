@@ -1,0 +1,4 @@
+[submodule "thirdparty/XenosRecomp"]
+	path = thirdparty/XenosRecomp
+	url = https://github.com/stuken/reblue-XenosRecomp.git
+	branch = pgr4

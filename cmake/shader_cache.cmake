@@ -1,8 +1,8 @@
 # pgr4_shader_cache() takes the shader containers out of the game image at build
-# time into SHADER_DIR and defines pgr4_shaders. Ported from pgr3's
-# cmake/shader_cache.cmake; the XenosRecomp step that turns SHADER_DIR into a
-# DXIL/SPIR-V cache (pgr4_shader_cache_gen, pgr4_shader_hlsl_dump) comes with
-# Phase 2 of docs/native-renderer-plan.md.
+# time, runs the Xenos shader recompiler over them into OUTPUT_CPP, and defines
+# pgr4_shaders and pgr4_shader_cache_gen. It also defines pgr4_shader_hlsl_dump
+# for inspecting the recompiled HLSL. Ported from pgr3's
+# cmake/shader_cache.cmake.
 #
 # PGR4's shaders are embedded in default.xex, and the title update
 # (default.xexp) rebuilds most of them, so they come from the image as the SDK
@@ -11,8 +11,8 @@
 # container into SHADER_DIR, including the ten the game builds on its stack
 # from instruction immediates. The XEX header gives the image's load address.
 function(pgr4_shader_cache)
-    cmake_parse_arguments(ARG "" "GAME_DIR;XEX;SHADER_DIR" "" ${ARGN})
-    foreach(arg GAME_DIR XEX SHADER_DIR)
+    cmake_parse_arguments(ARG "" "RECOMP_TARGET;GAME_DIR;XEX;SHADER_DIR;INCLUDE_FILE;OUTPUT_CPP" "" ${ARGN})
+    foreach(arg RECOMP_TARGET GAME_DIR XEX SHADER_DIR INCLUDE_FILE OUTPUT_CPP)
         if(NOT ARG_${arg})
             message(FATAL_ERROR "pgr4_shader_cache: missing ${arg}")
         endif()
@@ -52,7 +52,29 @@ function(pgr4_shader_cache)
         DEPENDS "${extract_script}" "${image}" "${xex_path}"
         COMMENT "Extracting Xenos shaders from the patched image"
         VERBATIM)
-    # In ALL until the recompiled cache depends on it, so every build keeps
-    # the extracted set current for pgr4_shader_census checks.
-    add_custom_target(pgr4_shaders ALL DEPENDS "${shader_index}")
+    add_custom_target(pgr4_shaders DEPENDS "${shader_index}")
+
+    cmake_path(GET ARG_OUTPUT_CPP PARENT_PATH output_dir)
+    file(MAKE_DIRECTORY "${output_dir}")
+
+    add_custom_command(
+        OUTPUT "${ARG_OUTPUT_CPP}"
+        COMMAND $<TARGET_FILE:${ARG_RECOMP_TARGET}>
+                "${ARG_SHADER_DIR}" "${ARG_OUTPUT_CPP}" "${ARG_INCLUDE_FILE}"
+        DEPENDS ${ARG_RECOMP_TARGET} "${ARG_INCLUDE_FILE}" "${shader_index}"
+        COMMENT "Recompiling Xenos shaders from ${ARG_SHADER_DIR}"
+        USES_TERMINAL VERBATIM)
+    add_custom_target(pgr4_shader_cache_gen DEPENDS "${ARG_OUTPUT_CPP}")
+
+    set(PGR4_HLSL_DUMP_DIR "${CMAKE_BINARY_DIR}/hlsl_dump" CACHE PATH
+        "Directory pgr4_shader_hlsl_dump writes recompiled HLSL into")
+    add_custom_target(pgr4_shader_hlsl_dump
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${PGR4_HLSL_DUMP_DIR}"
+        COMMAND $<TARGET_FILE:${ARG_RECOMP_TARGET}>
+                "${ARG_SHADER_DIR}" "${output_dir}/shader_cache.hlsldump.cpp"
+                "${ARG_INCLUDE_FILE}" "${PGR4_HLSL_DUMP_DIR}"
+        DEPENDS "${shader_index}"
+        COMMENT "Dumping recompiled HLSL to ${PGR4_HLSL_DUMP_DIR}"
+        USES_TERMINAL VERBATIM)
+    add_dependencies(pgr4_shader_hlsl_dump ${ARG_RECOMP_TARGET})
 endfunction()

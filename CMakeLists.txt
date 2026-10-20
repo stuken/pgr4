@@ -47,16 +47,27 @@ if(WIN32)
     set_source_files_properties(${PGR4_ICON_RC} PROPERTIES OBJECT_DEPENDS ${PGR4_ICON_ICO})
 endif()
 
-# The Xenos shaders the game creates, extracted from the patched image into
-# generated/shaders (pgr4_shaders). XenosRecomp turns them into the native
-# renderer's cache in a later phase (docs/native-renderer-plan.md).
+# Recompiled Xenos shaders: XenosRecomp turns every shader the game creates into
+# a DXIL/SPIR-V cache compiled into pgr4_shader_cache. The native renderer will
+# link it (docs/native-renderer-plan.md); until then every build compiles it so
+# the pipeline stays exercised.
 set(PGR4_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(PGR4_SHADER_COMMON_H
+    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/XenosRecomp/XenosRecomp/shader_common.h")
+
+add_subdirectory(thirdparty)
 include(cmake/shader_cache.cmake)
 
 pgr4_shader_cache(
-    GAME_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-    XEX        default.xex
-    SHADER_DIR "${PGR4_GEN_DIR}/shaders")
+    RECOMP_TARGET XenosRecomp
+    GAME_DIR      "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    XEX           default.xex
+    SHADER_DIR    "${PGR4_GEN_DIR}/shaders"
+    INCLUDE_FILE  "${PGR4_SHADER_COMMON_H}"
+    OUTPUT_CPP    "${PGR4_GEN_DIR}/shader_cache.cpp")
+
+add_library(pgr4_shader_cache OBJECT "${PGR4_GEN_DIR}/shader_cache.cpp")
+target_include_directories(pgr4_shader_cache PRIVATE src)
 
 # Sources
 set(PGR4_SOURCES

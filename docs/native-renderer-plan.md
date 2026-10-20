@@ -18,8 +18,8 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 |---|---|
 | 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode all 42 resolves of a race frame. Still open: `pgr4_trace_frame` (needs Phase 4 names), and reference dumps of the garage, a night race and a rain race. See Phase 0 findings. |
 | 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. See Phase 1 findings. |
-| 2. XenosRecomp | **Not started.** |
-| 3. Build integration | **Not started.** |
+| 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
+| 3. Build integration | **Started.** `thirdparty/XenosRecomp` (submodule), `thirdparty/CMakeLists.txt` and the full `cmake/shader_cache.cmake` (extract, recompile, HLSL dump) are in. Left: `PGR4_NATIVE_GPU` and the native exes, plume, miniz and zstd, `pgr4_prelink`. |
 | 4. D3D identification (XDK 6132) | **Not started.** This is the largest unknown. |
 | 5. Native renderer bring-up | **Not started.** |
 | 6. Hardening and performance | **Not started.** |
@@ -308,6 +308,72 @@ already cover.
 The Perlin noise (`vs/psPerlin`, `psPerlin2`, `psPerlin4`) is the
 eight-pass 128x128 target in the race frame (Phase 0).
 
+### Phase 2 findings
+
+`thirdparty/XenosRecomp` is the fork (stuken/reblue-XenosRecomp), on its
+branch `pgr4` (`5f68d6f`), made from `pgr3` (`6944662`).
+
+**First runs** (`scratch/xr-*`). With only `REBLUE_RECOMP`, 306 of 990
+shaders fail DXIL; with no define (close to upstream's behaviour for 0x11),
+322. Three causes, none of them about container revision 0x11, which the
+fork already parses:
+
+1. **Vertex input locations.** PGR4 declares 23 input semantics, at most 12
+   per shader: `POSITION0`-`6`, `BLENDWEIGHT0`-`1`, `BLENDINDICES0`,
+   `NORMAL0`-`2`, `TEXCOORD0`-`6`, `TANGENT0`, `COLOR0`-`1`. Now the
+   `PGR4_RECOMP` table in `shader_common.h` (locations 0-22, so Vulkan needs
+   `maxVertexInputAttributes` >= 23).
+2. **Interpolators.** Some pairs pass `NORMAL0` (24 VS, 43 PS) and
+   `TANGENT0`/`1` (6 VS, 22 PS). They are appended to the interpolator list
+   under `PGR4_RECOMP`, so the shared registers keep their order.
+3. **Vertex texture fetch** (188 vertex shaders, none in pgr3 or rr6). Two
+   generic bugs, fixed for every game:
+   - the microcode fetches vertex sampler *n* through fetch constant 16 + *n*,
+     while the constant table names it by register *n*, so every fetch fell
+     back to an undeclared `s16`-`s19`. The recompiler now maps a VS fetch
+     constant >= 16 back to its sampler register;
+   - a vertex shader has no derivatives, so `Sample` is invalid there. A VS
+     fetch now samples at an explicit level (`tfetch{2D,3D,Cube}Level`): the
+     LOD bias, in 1/16ths, as Xenia does.
+
+   **`SetTextureLod` was dropped.** 32 VS and 103 PS set the LOD register
+   and fetch with `useRegLod`; the recompiler ignored the instruction, and
+   pixel shaders sampled at the computed LOD instead. It now writes
+   `textureLod`, and any fetch with `useRegLod` samples at
+   `textureLod + bias`. `textureLod` is declared only in shaders that use it.
+
+**Shared engine paths.** pgr3's vertex-format and fetch work (DEC3N/DEC4N,
+the UHEND3N family, integer `SHORT4` positions, the `BLENDINDICES` swap,
+vertex pulling, `VFETCH`) now sits under `GOTHAM_RECOMP`, which
+`PGR3_RECOMP` and `PGR4_RECOMP` both set (`shader.h`, `shader_common.h`).
+Each game keeps its own vertex input table and interpolator list.
+
+**Result:** 990 of 990 compile for DXIL and SPIR-V. Spec constants: 626 PS
+`ALPHA_TEST` (`0x2`), 292 VS with both normal decodes (`0x5`), 72 with none,
+the same proportions as pgr3. The full recompile takes about 5.5 s (pgr3:
+2.2 s), and the generated cache source is 8.1 MB (pgr3: 4.3 MB), a 2.3 MB
+object.
+
+**The HLSL review** (step 3), shader bodies only:
+
+- no memexport, no `call`/`return`, no point-size writes, no MRT, no `#error`;
+- relative constant indexing (`a0`) in 12 VS and 2 PS, which the recompiler
+  already clamps;
+- integer constants and loops (`for (aL = 0; aL < i31.x; ...)`) in four PS:
+  the game's `MotionBlur` and `MotionBlurSplitScreen`, mercury's
+  `MotionBlur` and `psPerlin4`. **The host has to supply integer constant
+  31**;
+- depth output in 4 PS, cube fetches in 385 PS;
+- 8 VS pull their vertices (computed fetch indices), as 10 did in pgr3.
+
+**Regression** (step 5), comparing each shader's own HLSL with the shared
+header removed, against pgr3's fork commit: rr6's 176 are unchanged. 8 of
+pgr3's 309 change: pixel shaders (its road base and markings diffuse maps
+among them) whose microcode sets `SetTextureLod` and now sample at that level
+instead of the computed one. That is the intended fix, but pgr3 pins its own
+fork commit, so it changes nothing there until pgr3 moves its submodule, and
+then needs a look at the road markings.
+
 ---
 
 ## Approach
@@ -407,6 +473,8 @@ the native build, or video of the original).
 runtime census shows 100% hits.
 
 ### Phase 2: XenosRecomp for PGR4
+
+Steps 1-5 are done (Phase 2 findings).
 
 1. Branch `pgr4` off the fork's `pgr3` branch. First run it over the patched
    set with only `REBLUE_RECOMP` (no game define) to see which of rr6's and

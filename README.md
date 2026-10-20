@@ -5,7 +5,7 @@ pgr4 rebuilds Project Gotham Racing 4 (Xbox 360) as a native PC program using st
 > [!IMPORTANT]
 > This repository contains nothing from the game. You need the files from your own retail copy of Project Gotham Racing 4, together with its title update, and both building and running need them. Everything derived from the game is produced on your machine at build time and is never committed:
 > - the recompiled C++ that codegen generates from `default.xex` (`generated/default/`, gitignored);
-> - the 990 Xenos shaders taken from the patched game image (inside the build directory);
+> - the 990 Xenos shaders taken from the patched game image, and the DXIL and SPIR-V that XenosRecomp makes from them (inside the build directory);
 > - the window icon, also taken from `default.xex` (`src/icon.generated.*`, gitignored).
 
 ## Status
@@ -44,7 +44,14 @@ set "PATH=%VCINSTALLDIR%Tools\Llvm\x64\bin;%PATH%"
 clang --version
 ```
 
-### 2. Add the game files
+### 2. Fetch the submodules and add the game files
+
+`thirdparty/XenosRecomp` is a submodule with submodules of its own:
+
+```bat
+git submodule update --init --recursive
+```
+
 
 Extract the contents of your Project Gotham Racing 4 disc into `assets/`, using a tool such as extract-xiso, so that you end up with `assets/default.xex` next to the `Game`, `Movies` and `UI` folders. From the title update, put `default.xexp` next to `default.xex`, and put `Pgr4TitleUpdate.bin` in `update/`. Both folders are gitignored.
 
@@ -98,6 +105,7 @@ The commands do the following:
 4. **Build.** This produces `pgr4.exe` in the build directory, along with the DLLs it needs from the SDK. It also extracts the game's shaders:
    - `pgr4_dump_image` loads the game through the SDK, title update applied, and writes the patched image.
    - `scripts/extract_shaders.py` pulls the 990 Xenos shaders out of it into `generated/shaders`, including ten the game builds on the stack.
+   - XenosRecomp (`thirdparty/XenosRecomp`) turns them into DXIL and SPIR-V, compiled into `pgr4_shader_cache` for the native renderer to come.
 
 Debug and Release presets work the same way (`win-amd64-debug`, `win-amd64-release`).
 
@@ -145,14 +153,15 @@ pgr4.exe --pgr4_input_script=start@10s,start@15s,start@20s,start@25s,start@30s,s
 | `src/` | The app (`main.cpp`, `pgr4_app.h`), shared support (`core/`) and test tooling (`platform/`). |
 | `config/` | Names for the game's statically linked XDK 6132 Direct3D and XAPI functions, used by codegen and the tooling's hooks. |
 | `pgr4_config.toml`, `pgr4_manifest.toml` | Codegen configuration. |
-| `cmake/` | The shader extraction build (`pgr4_shaders`). |
+| `cmake/` | The shader extraction and recompile build (`pgr4_shaders`, `pgr4_shader_cache_gen`). |
 | `scripts/` | Shader extraction, the census check, the icon generator and reverse-engineering helpers (`scripts/re/`). |
 | `tools/` | `pgr4_dump_image`. |
+| `thirdparty/` | XenosRecomp. |
 | `docs/` | The native renderer plan and findings. |
 
 ## License
 
-pgr4's own code is under the [BSD Zero Clause License](LICENSE), as pgr3's and rr6's are: use it for anything, with no conditions. The code ported from re:Blue, by way of rr6 and pgr3, stays under re:Blue's BSD 3-Clause License ([licenses/reblue-BSD-3-Clause.txt](licenses/reblue-BSD-3-Clause.txt)), as its file headers say. No license here covers Project Gotham Racing 4 itself.
+pgr4's own code is under the [BSD Zero Clause License](LICENSE), as pgr3's and rr6's are: use it for anything, with no conditions. The code ported from re:Blue, by way of rr6 and pgr3, stays under re:Blue's BSD 3-Clause License ([licenses/reblue-BSD-3-Clause.txt](licenses/reblue-BSD-3-Clause.txt)), as its file headers say. The submodules keep their own licenses. No license here covers Project Gotham Racing 4 itself.
 
 ## Credits
 
