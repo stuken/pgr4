@@ -1,0 +1,43 @@
+# XDK 2.0.6132.4 Direct3D, as statically linked into PGR4's default.xex (with
+# title update 0.0.2.1 applied, which is what codegen and the runtime load).
+#
+# Only what the Phase 0 tooling hooks is named so far, found from the kernel
+# imports and the game's frame end with scripts/re/funcdb.py. Phase 4 names
+# the rest.
+#
+# 6132 still reaches the display without D3DDevice_Present on the game's
+# path: the frame end, sub_822B3B08, calls D3DDevice_Resolve (flags 0x300,
+# the front buffer texture at g+20 as destination) and then D3DDevice_Swap
+# itself, as PGR3's does. It then blocks on the previous frame's fence and
+# inserts a new one. Swap has three other callers (sub_826CB6E0,
+# sub_826E0E10 and sub_8286DDF8), all in .text, outside the BINK section.
+#
+# D3DDevice layout seen so far (6132 differs from 2099):
+#   +0x3090           render targets (Resolve indexes dev + (3108 + i) * 4;
+#                     2099: +0x30F8)
+#   +0x30A0           depth-stencil surface (Resolve's i == 4)
+#   +0x2A90           pointer to the GPU's fence read-back (IsFencePending)
+#   +0x2A9C           next fence (InsertFence, IsFencePending)
+#   +0x2AB0           last inserted fence
+# D3DBaseTexture: the fetch constant is at +0x1C (2099: +0x10); Resolve reads
+# the destination's pitch at +0x1C, base and format at +0x20, size at +0x24.
+
+# Shader creation is the XG way, not D3DDevice_Create*Shader (not linked):
+# the game's sub_822B34A0 (VS) and sub_822B35F0 (PS) split the container with
+# XGGetMicrocodeShaderParts, allocate the header and physical memory
+# themselves, fill the header with XGSet*ShaderHeader, copy the microcode and
+# call XGRegister*Shader with its physical address. sub_8286F7B0 (VS) and
+# sub_8286F9F0 (PS) do the same for another subsystem. Every container passes
+# through XGGetMicrocodeShaderParts.
+
+[functions]
+0x826C9DA8 = { name = "XGGetMicrocodeShaderParts" } # (container, XGMICROCODESHADERPARTS*): cached part, size (+872 VS, +40 PS), physical part, size
+0x826C9DF8 = { name = "XGRegisterPixelShader" } # (header, physical microcode)
+0x826CA038 = { name = "XGRegisterVertexShader" } # (header, physical microcode); type 6, refcount 1, microcode at +32
+0x826CA6D8 = { name = "XGSetPixelShaderHeader" } # (header, size, parts)
+0x826CA820 = { name = "XGSetVertexShaderHeader" } # (header, size, parts); clears 872 bytes first
+0x826CB148 = { name = "D3DDevice_Swap" } # (dev, front buffer, params); VdSwap's only caller
+0x826CBEE0 = { name = "D3DDevice_Resolve" } # (dev, flags, rect, dest, point, level, slice, colour, z in f1, ...)
+0x826CE320 = { name = "D3DDevice_BlockOnFence" } # (fence) -> wait on the global device, reason 6
+0x826CE9C0 = { name = "D3DDevice_InsertFence" } # (dev) -> fence; kicks through sub_826CE8C0
+0x826CE9F8 = { name = "D3DDevice_IsFencePending" } # (fence)

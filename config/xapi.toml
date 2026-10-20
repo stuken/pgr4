@@ -1,0 +1,6 @@
+# XAPI functions statically linked into PGR4's default.xex (XAPILIB 2.0.6132.6,
+# title update 0.0.2.1 applied) that pgr4's host code hooks. Identified from
+# their bodies with scripts/re/funcdb.py.
+
+[functions]
+0x826A8F00 = { name = "XInputGetState" } # (user, state) -> XamInputGetState(user, 1, state); the import's only caller

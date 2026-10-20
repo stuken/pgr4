@@ -12,6 +12,12 @@
 
 #include "icon.generated.h"
 
+#include "platform/guest_abort_log.h"
+#include "platform/silent_audio.h"
+#include <rex/cvar.h>
+
+REXCVAR_DECLARE(bool, pgr4_null_audio);
+
 class Pgr4App : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -24,6 +30,8 @@ class Pgr4App : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.gpu_plugin = "xenos";
+    if (REXCVAR_GET(pgr4_null_audio))
+      config.audio_factory = REX_AUDIO_BACKEND(pgr4::platform::SilentAudioSystem);
 #ifdef _WIN32
     timeBeginPeriod(1);
 #endif
@@ -46,16 +54,17 @@ class Pgr4App : public rex::ReXApp {
     window()->SetTitle("Project Gotham Racing 4");
   }
 
+  void OnPreLaunchModule() override {
+    pgr4::platform::InstallGuestAbortLogger();
+  }
+
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
 };

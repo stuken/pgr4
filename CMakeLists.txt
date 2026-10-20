@@ -47,16 +47,43 @@ if(WIN32)
     set_source_files_properties(${PGR4_ICON_RC} PROPERTIES OBJECT_DEPENDS ${PGR4_ICON_ICO})
 endif()
 
+# The Xenos shaders the game creates, extracted from the patched image into
+# generated/shaders (pgr4_shaders). XenosRecomp turns them into the native
+# renderer's cache in a later phase (docs/native-renderer-plan.md).
+set(PGR4_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+include(cmake/shader_cache.cmake)
+
+pgr4_shader_cache(
+    GAME_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    XEX        default.xex
+    SHADER_DIR "${PGR4_GEN_DIR}/shaders")
+
 # Sources
 set(PGR4_SOURCES
     src/main.cpp
     ${PGR4_ICON_HEADER}
 )
 
+# What every build shares: test tooling (pgr4_input_script, pgr4_null_audio)
+# and the abort logger.
+set(PGR4_COMMON_SOURCES
+    src/core/memory_helpers.cpp
+    src/core/settings.cpp
+    src/platform/guest_abort_log.cpp
+    src/platform/input_script.cpp)
+
 if(WIN32)
     add_executable(pgr4 WIN32 ${PGR4_SOURCES} ${PGR4_ICON_RC})
 else()
     add_executable(pgr4 ${PGR4_SOURCES})
 endif()
+target_sources(pgr4 PRIVATE ${PGR4_COMMON_SOURCES})
+target_include_directories(pgr4 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 rexglue_setup_target(pgr4 GPU_PLUGINS xenos)
+# Resolve-target dumps (pgr4_dump_frames, pgr4_dump_raw), comparable with the
+# native renderer's, and the shader census (pgr4_shader_census), which checks
+# the extracted set against the shaders the game creates.
+target_sources(pgr4 PRIVATE
+    src/platform/shader_census.cpp
+    src/platform/xenos_resolve_dump.cpp)
