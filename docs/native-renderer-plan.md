@@ -30,8 +30,9 @@ Everything before "Phase 0 findings" comes from reading `assets/` (no build,
 no codegen). The scripts are in `scratch/` (gitignored), and each has a usage
 docstring.
 `assets/default_patched.xex` is a hand-made copy of `default.xex` with
-`default.xexp` applied. As in pgr3, it serves only for these early scans: the
-build will take the patched image from `pgr4_dump_image` (Phase 1).
+`default.xexp` applied. As in pgr3, it served only for these early scans: the
+build takes the patched image from `pgr4_dump_image` (Phase 1), and the two
+give the same shader set.
 
 ### The executable
 
@@ -111,9 +112,9 @@ names will find fewer exact matches (Phase 4).
   `0x822BDBDC`/`0x822BE1EC`, `0x824F3EF8`..`0x824F52C4` (four),
   `0x825FEB14`/`0x825FEFD4` and `0x82627BA4`/`0x82627F90`. The unpatched
   image has the same pattern at other addresses. In PGR3 this pattern found
-  the 4 stack-built shaders (two functions, a VS and PS each), so these are
-  probably four or five functions building about ten shaders. A byte scan
+  the 4 stack-built shaders (two functions, a VS and PS each). A byte scan
   cannot find a stack-built container, so none of them is in the 980.
+  (Phase 1: four functions build exactly ten shaders, one per `lis`.)
 
 ### Content
 
@@ -220,7 +221,7 @@ decodes.
 | Resolves | Target | Format | What |
 |---|---|---|---|
 | 1 | 200x200 | `k_8_8_8_8` | minimap |
-| 8 | 128x128, one base | `k_8_8_8_8` | a grey noise pattern built in eight passes; purpose unknown (not rain: this race is dry) |
+| 8 | 128x128, one base | `k_8_8_8_8` | Perlin noise built in eight passes (mercury's `vs/psPerlin`, `psPerlin2`, `psPerlin4`; Phase 1) |
 | 6 | 256x256 cube, faces 0-5 (`r9`) | `k_16_16_16_16_EXPAND` | the environment cube, rendered every frame from the car |
 | 1 | 512x512 | `k_24_8_FLOAT` | car shadow map (depth, 0.33-1) |
 | 3 | 320x180, one base | `k_2_10_10_10_AS_16_16_16_16` | the scene downsampled and blurred twice (depth of field or motion blur?) |
@@ -392,7 +393,9 @@ then needs a look at the road markings.
 - **Prelink:** `pgr4_prelink` DXC-links every subset of each shader's spec
   constants: **2,420 variants** (626 PS x 2 alpha-test states, 292 VS x 4
   normal-format states), 28.7 MB of DXIL deflated to 8.2 MB, with no
-  failures. pgr3 had 548. The whole native build from a fresh directory took
+  failures. pgr3 prelinks 688 (548 at its own Phase 3, before the DEC3N
+  variants doubled its vertex shaders'). The whole native build from a fresh
+  directory took
   67 s, so prelinking stays complete; Phase 2's question about lazy
   prelinking is closed.
 - **App:** under `PGR4_NATIVE_GPU`, `OnPreSetup` sets `config.graphics =
@@ -466,7 +469,7 @@ reference comes first.
    `SetDepthStencilSurface`, the draw calls, `Clear` and the tiling calls,
    and reads the device's render-target, texture and stream shadows. All of
    these are Phase 4 identifications in 6132. `Settings::Init` belongs to
-   the native renderer (Phase 3).
+   the native renderer (Phase 5), as in pgr3.
 4. **Scripted runs to reference scenes**, in seconds from boot (pgr3 quirks
    §1). **Done:** the boot movies, title, front end and a day race (St
    Petersburg, overcast). **Left:** a garage, a night race and a **rain
@@ -485,9 +488,8 @@ the native build, or video of the original).
 ### Phase 1: Shader extraction from the patched image
 
 1. **Done:** `pgr4_dump_image` (`tools/dump_image.cpp`) and the
-   `pgr4_shaders` target (`cmake/shader_cache.cmake`, in ALL until the
-   recompiled cache depends on it). The XenosRecomp half of pgr3's
-   `shader_cache.cmake` comes with Phase 2.
+   `pgr4_shaders` target (`cmake/shader_cache.cmake`). Since Phase 2 the
+   recompiled cache depends on it, so every build extracts.
 2. **Done:** `extract_shaders.py` reads revision 0x11 (nine-dword header,
    `field1C`/`field20` zero, a well-formed CTAB at `constantTableOffset`), and
    `shaders.csv` has a `name` column from the `.updb` path.
@@ -526,10 +528,10 @@ Steps 1-5 are done (Phase 2 findings).
 3. Review the HLSL dump for memexport (gotham4's particles or rain may use
    it), `cond_call`/`return`, int constants, dynamic register indexing and
    point sprites. Each is an `#error` or a host task.
-4. Budget for scale. pgr3 prelinked 688 variants from 309 shaders. PGR4 could
+4. Budget for scale. pgr3 prelinks 688 variants from 309 shaders. PGR4 could
    reach 2,000-plus, so measure the build time and the size of the embedded
    cache, and decide whether prelinking stays complete or becomes lazy for
-   rare variants.
+   rare variants. (Measured in Phase 3: 2,420, and it stays complete.)
 5. Check that rr6's and pgr3's shaders still compile with their own defines
    (pgr3's regression rule).
 
@@ -563,7 +565,8 @@ matter more than the shape matching here.
      `VdGlobalDevice`, `VdGetCurrentDisplayGamma`,
      `MmAllocatePhysicalMemoryEx`/`MmFreePhysicalMemory`;
    - the shader container VAs and their references, which lead to
-     `Create{Vertex,Pixel}Shader` or whatever replaces them;
+     `Create{Vertex,Pixel}Shader` or whatever replaces them (Phase 1: the XG
+     functions, `XGRegister{Vertex,Pixel}Shader` and the game's creators);
    - the `{Get, Set, Default}` render- and sampler-state tables
      (`scripts/re/state_setters.py`). The state enums are the API's, so
      index *k* is still the same state, and the device fields each setter
@@ -573,7 +576,8 @@ matter more than the shape matching here.
 2. **Find out what 6132 adds over 2099.** Each item becomes a hook, a
    documented gap, or a reason the wrap-don't-replace model needs more:
    - **The frame end.** Does the game call `D3DDevice_Present`, or resolve
-     and `Swap` itself as PGR3 does?
+     and `Swap` itself as PGR3 does? (Phase 0: it resolves and calls `Swap`
+     itself, `sub_822B3B08`; `Swap` has three other callers to place.)
    - **Constant paths that bypass the device shadow:** `BeginShaderConstantF4`
      (or its successor), GPU-owned constants, and constant buffers set as a
      block. pgr3 lost every world matrix until its ring writes were modelled.
@@ -584,7 +588,8 @@ matter more than the shape matching here.
    - Surface creation parameters (EDRAM base, `HiZ`), predicated tiling,
      queries, and `DrawIndexedVerticesUP`.
 3. Write `config/d3d.toml` and `config/xapi.toml`, include them from
-   `pgr4_manifest.toml`, and re-run codegen with no naming warnings.
+   `pgr4_manifest.toml`, and re-run codegen with no naming warnings. (Started:
+   both exist and are included, with the 11 names Phases 0 and 1 needed.)
 4. Write `src/gpu/d3d.h` for 6132: allocation size, dirty masks, dispatch
    tables, fetch, float and bool constants, every register shadow pgr3 reads,
    viewport, scissor, clip planes, streams, textures, render targets, depth
@@ -628,8 +633,10 @@ table filled in.
    - **photo mode, replays, Gotham TV and split screen**, which are likely to
      use predicated tiling, larger targets or picture-in-picture corners
      (pgr3 quirks §3);
-   - whatever render setup 6132 and gotham4 use: the resolution, MSAA count
-     and HDR format (pgr3 used 1024x600, 2x, 7e3; do not assume it).
+   - whatever render setup 6132 and gotham4 use (pgr3 used 1024x600, 2x,
+     7e3). Known from Phase 0's resolves: 1280x720, an FP16 scene, an FP32
+     adaptation value, a 10-bit front buffer and reversed-Z depth. The MSAA
+     count waits for Phase 4's trace.
 5. Keep pgr3's `WARN_FIRST` warnings for paths the renderer does not model,
    and model a path only when a warning shows PGR4 reaching it.
 6. Lifetime: hook `D3DResource_Destroy` and `XPhysicalAlloc`/`XPhysicalFree`,
@@ -671,21 +678,24 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
    `BeginShaderConstantF4` did in pgr3. Command buffers could force the
    renderer to parse PM4 packets for part of the frame. Find out in Phase 4
    step 2 before committing to Phase 5's order.
-3. **Shader scale.** 980 shaders (plus about ten stack-built ones) against 309 in PGR3 means three
-   times the recompile, prelink and cache work, and more chances of a new
-   instruction pattern. On the other hand, rev 0x11 is upstream XenosRecomp's
-   own format.
+3. **Shader scale.** 990 shaders against 309 in PGR3 means three times the
+   recompile, prelink and cache work, and more chances of a new instruction
+   pattern. **Settled in Phases 2 and 3:** all 990 compile, the recompile
+   takes about 5.5 s and the 2,420-variant prelink fits in a 67 s native
+   build. The new patterns (vertex texture fetch, `SetTextureLod`) are
+   handled.
 4. **The xenos baseline may not reach a race.** pgr3's whole method rests on
-   comparing against xenos. If it fails early, fixing the SDK's xenos path
-   for PGR4 may be cheaper than working without a reference.
+   comparing against xenos. **Settled in Phase 0:** a scripted run reaches a
+   race, and its resolves decode. Night, rain and snow races are not yet
+   checked.
 5. **New render paths** (weather, bikes, photo mode, split screen) have no
    precedent in pgr3. The quirks document covers the engine as PGR3 used it,
    not everything gotham4 added.
 6. **The patched image.** The title update leaves shader microcode alone,
    but it changes 878 container hashes, moves code and relinks D3D9 at a
    newer QFE. As in pgr3, codegen, the extractor and the runtime must all see
-   the patched image, and a census check should fail the build if they
-   drift.
+   the patched image (they do: Phases 0 and 1). A census check that fails the
+   build if they drift is still to do.
 7. **Scale of the port.** pgr3's `src`, `cmake`, `tools` and `scripts` come to about 27k lines,
    5k of them the precache list.
    Most of the cost was game-specific findings, not the copy. Phases 0-4 leave
