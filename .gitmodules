@@ -2,3 +2,11 @@
 	path = thirdparty/XenosRecomp
 	url = https://github.com/stuken/reblue-XenosRecomp.git
 	branch = pgr4
+[submodule "thirdparty/plume"]
+	path = thirdparty/plume
+	url = https://github.com/stuken/plume.git
+	branch = rr6
+[submodule "thirdparty/rexglue-sdk"]
+	path = thirdparty/rexglue-sdk
+	url = https://github.com/stuken/rexglue-sdk.git
+	branch = main

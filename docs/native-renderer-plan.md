@@ -19,7 +19,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode all 42 resolves of a race frame. Still open: `pgr4_trace_frame` (needs Phase 4 names), and reference dumps of the garage, a night race and a rain race. See Phase 0 findings. |
 | 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. See Phase 1 findings. |
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
-| 3. Build integration | **Started.** `thirdparty/XenosRecomp` (submodule), `thirdparty/CMakeLists.txt` and the full `cmake/shader_cache.cmake` (extract, recompile, HLSL dump) are in. Left: `PGR4_NATIVE_GPU` and the native exes, plume, miniz and zstd, `pgr4_prelink`. |
+| 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Not started.** This is the largest unknown. |
 | 5. Native renderer bring-up | **Not started.** |
 | 6. Hardening and performance | **Not started.** |
@@ -374,6 +374,38 @@ instead of the computed one. That is the intended fix, but pgr3 pins its own
 fork commit, so it changes nothing there until pgr3 moves its submodule, and
 then needs a look at the road markings.
 
+### Phase 3 findings
+
+- **Submodules:** `thirdparty/XenosRecomp` (`pgr4`, `5f68d6f`),
+  `thirdparty/plume` (stuken `rr6`, `2f9fb4c`, with its four `contrib/`
+  submodules) and `thirdparty/rexglue-sdk` (stuken `main`, `905694f`), the
+  same plume and SDK commits pgr3 pins. Each was cloned with pgr3's copy as a
+  reference and then made independent of it. As in pgr3 the SDK checkout is a
+  pin: the build uses an installed SDK (`CMAKE_PREFIX_PATH`). miniz and zstd
+  are vendored from pgr3.
+- **Build files:** `cmake/native_gpu.cmake` and `cmake/shaders.cmake` are
+  pgr3's, renamed. The renderer's host HLSL list is left empty until its port
+  in Phase 5. The top-level `CMakeLists.txt` has `PGR4_NATIVE_GPU` (OFF keeps
+  the xenos plugin) and splits sources as pgr3 does: every build shares the
+  test tooling, the xenos build adds the census and resolve dump, and the
+  native build globs `src/gpu`, `src/core` and `src/platform`.
+- **Prelink:** `pgr4_prelink` DXC-links every subset of each shader's spec
+  constants: **2,420 variants** (626 PS x 2 alpha-test states, 292 VS x 4
+  normal-format states), 28.7 MB of DXIL deflated to 8.2 MB, with no
+  failures. pgr3 had 548. The whole native build from a fresh directory took
+  67 s, so prelinking stays complete; Phase 2's question about lazy
+  prelinking is closed.
+- **App:** under `PGR4_NATIVE_GPU`, `OnPreSetup` sets `config.graphics =
+  nullptr`, and `OnPreLaunchModule` logs "the native renderer is not
+  implemented yet", flushes the log and exits with code 1, as pgr3 did in its
+  Phase 3. `src/gpu/present_count_stub.cpp` stands in for the renderer's
+  present counter, which `pgr4_input_script` reads. Both exes load the
+  patched image and exit this way.
+- **Regeneration checked:** touching `shader_common.h` relinks XenosRecomp
+  (it compiles the header in) and reruns the recompile; touching
+  `default.xexp` reruns the image dump, extraction and recompile. Both
+  rebuild `pgr4_shader_cache` and relink the exe.
+
 ---
 
 ## Approach
@@ -504,6 +536,8 @@ Steps 1-5 are done (Phase 2 findings).
 **Exit:** every shader compiles for DXIL and SPIR-V with 0 failures.
 
 ### Phase 3: Build integration
+
+All done (Phase 3 findings).
 
 1. Copy pgr3's `cmake/`, `thirdparty/CMakeLists.txt` and `CMakeLists.txt`
    layout: `PGR4_NATIVE_GPU` (OFF = xenos), `PGR4_D3D12`,

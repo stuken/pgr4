@@ -8,6 +8,16 @@ project(pgr4 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CMakeDependentOption)
+# OFF keeps the SDK's xenos GPU plugin (Xenia-style emulation). ON replaces the
+# guest D3D library with the native plume renderer and the recompiled shader
+# cache (docs/native-renderer-plan.md). Hooks bind at link time, so this is a
+# build switch, not a cvar. The renderer is not ported yet (plan Phase 5): the
+# native exes link the shader cache and exit at launch.
+cmake_dependent_option(PGR4_NATIVE_GPU
+    "Native plume renderer with recompiled shaders (OFF = SDK xenos plugin)"
+    OFF "WIN32 OR LINUX" OFF)
+
 include(generated/rexglue.cmake)
 
 # Embedded window icon: extracted directly from assets/default.xex (already a
@@ -54,6 +64,7 @@ endif()
 set(PGR4_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(PGR4_SHADER_COMMON_H
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/XenosRecomp/XenosRecomp/shader_common.h")
+cmake_path(GET PGR4_SHADER_COMMON_H PARENT_PATH PGR4_SHADER_COMMON_DIR)
 
 add_subdirectory(thirdparty)
 include(cmake/shader_cache.cmake)
@@ -91,10 +102,15 @@ endif()
 target_sources(pgr4 PRIVATE ${PGR4_COMMON_SOURCES})
 target_include_directories(pgr4 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-rexglue_setup_target(pgr4 GPU_PLUGINS xenos)
-# Resolve-target dumps (pgr4_dump_frames, pgr4_dump_raw), comparable with the
-# native renderer's, and the shader census (pgr4_shader_census), which checks
-# the extracted set against the shaders the game creates.
-target_sources(pgr4 PRIVATE
-    src/platform/shader_census.cpp
-    src/platform/xenos_resolve_dump.cpp)
+if(PGR4_NATIVE_GPU)
+    rexglue_setup_target(pgr4)
+    include(cmake/native_gpu.cmake)
+else()
+    rexglue_setup_target(pgr4 GPU_PLUGINS xenos)
+    # Resolve-target dumps (pgr4_dump_frames, pgr4_dump_raw), comparable with
+    # the native renderer's, and the shader census (pgr4_shader_census), which
+    # checks the extracted set against the shaders the game creates.
+    target_sources(pgr4 PRIVATE
+        src/platform/shader_census.cpp
+        src/platform/xenos_resolve_dump.cpp)
+endif()

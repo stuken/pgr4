@@ -10,7 +10,10 @@ pgr4 rebuilds Project Gotham Racing 4 (Xbox 360) as a native PC program using st
 
 ## Status
 
-pgr4 is at the start of its native renderer port, following [pgr3](https://github.com/stuken/pgr3). Today it builds with the SDK's xenos plugin (Xenia-derived GPU emulation) only. With it, the game boots, goes through the front end and races (checked so far: a day race in St Petersburg). `docs/native-renderer-plan.md` tracks the plan, what has been found so far, and what is still open.
+pgr4 is at the start of its native renderer port, following [pgr3](https://github.com/stuken/pgr3). It has two build configurations:
+
+- **xenos plugin** (`PGR4_NATIVE_GPU=OFF`, the default): the SDK's Xenia-derived GPU emulation. The game boots, goes through the front end and races (checked so far: a day race in St Petersburg). This is the one to play, and the reference the native renderer will be checked against.
+- **Native renderer** (`PGR4_NATIVE_GPU=ON`): builds `pgr4.exe` (Direct3D 12) and `pgr4_vk.exe` (Vulkan) on [plume](https://github.com/renderbag/plume), with the game's shaders recompiled by XenosRecomp and embedded. The renderer itself is not ported yet, so these log that and exit at launch. `docs/native-renderer-plan.md` tracks the plan, what has been found so far, and what is still open.
 
 | Platform | State |
 |---|---|
@@ -46,7 +49,7 @@ clang --version
 
 ### 2. Fetch the submodules and add the game files
 
-`thirdparty/XenosRecomp` is a submodule with submodules of its own:
+The submodules (`thirdparty/XenosRecomp`, `thirdparty/plume`, `thirdparty/rexglue-sdk`) have submodules of their own. The SDK's make this a large download:
 
 ```bat
 git submodule update --init --recursive
@@ -69,26 +72,23 @@ Check your copy against these. A different `default.xex`, or a missing or differ
 
 ### 3. Build and install the ReXGlue SDK
 
-pgr4 needs SDK version 0.10.0. It is developed against [stuken/rexglue-sdk](https://github.com/stuken/rexglue-sdk) at commit `905694f`, the one pgr3 pins, which adds GPU, kernel and XAM fixes on top of upstream. It is not yet a submodule here. Clone it next to pgr4 and install it:
+pgr4 needs SDK version 0.10.0. It is developed against [stuken/rexglue-sdk](https://github.com/stuken/rexglue-sdk), which adds GPU, kernel and XAM fixes on top of upstream, and pins it as `thirdparty/rexglue-sdk` (the commit pgr3 pins). From the pgr4 folder:
 
 ```bat
-git clone --recursive https://github.com/stuken/rexglue-sdk.git
-cd rexglue-sdk
-git checkout 905694f
-git submodule update --init --recursive
+cd thirdparty\rexglue-sdk
 cmake --preset win-amd64
 cmake --build out/build/win-amd64 --config RelWithDebInfo --target install
-cd ..
+cd ..\..
 ```
 
-This installs the SDK to `rexglue-sdk\out\install\win-amd64`. The SDK uses a multi-config generator. Install each configuration you plan to build pgr4 in: run the build command again with `--config Release` or `--config Debug`.
+This installs the SDK to `thirdparty\rexglue-sdk\out\install\win-amd64`. An SDK built elsewhere works too: point `CMAKE_PREFIX_PATH` at its install instead. The SDK uses a multi-config generator. Install each configuration you plan to build pgr4 in: run the build command again with `--config Release` or `--config Debug`.
 
 ### 4. Configure, run codegen, and build
 
-Set `CMAKE_PREFIX_PATH` to the SDK install from step 3:
+Set `CMAKE_PREFIX_PATH` to the SDK install from step 3. Add `-DPGR4_NATIVE_GPU=ON` for the native configuration, or leave it off for the xenos plugin; giving each its own build directory keeps both:
 
 ```bat
-set REXSDK=C:\path\to\rexglue-sdk\out\install\win-amd64
+set REXSDK=%CD%\thirdparty\rexglue-sdk\out\install\win-amd64
 set BUILD=out\build\win-amd64-relwithdebinfo
 
 cmake --preset win-amd64-relwithdebinfo -B %BUILD% -DCMAKE_PREFIX_PATH=%REXSDK%
@@ -107,7 +107,15 @@ The commands do the following:
    - `scripts/extract_shaders.py` pulls the 990 Xenos shaders out of it into `generated/shaders`, including ten the game builds on the stack.
    - XenosRecomp (`thirdparty/XenosRecomp`) turns them into DXIL and SPIR-V, compiled into `pgr4_shader_cache` for the native renderer to come.
 
-Debug and Release presets work the same way (`win-amd64-debug`, `win-amd64-release`).
+Debug and Release presets work the same way (`win-amd64-debug`, `win-amd64-release`). These options apply to the native configuration:
+
+| Option | Default | Effect |
+|---|---|---|
+| `PGR4_NATIVE_GPU` | `OFF` | Native renderer instead of the xenos plugin. |
+| `PGR4_D3D12` | `ON` on Windows | `pgr4` uses D3D12. With `OFF`, `pgr4` itself uses Vulkan. |
+| `PGR4_VULKAN_EXE` | `ON` | Also build `pgr4_vk` (Windows). |
+
+The native build also runs `pgr4_prelink`, which links every spec-constant variant of the recompiled shaders at build time.
 
 ## Running
 
@@ -153,10 +161,10 @@ pgr4.exe --pgr4_input_script=start@10s,start@15s,start@20s,start@25s,start@30s,s
 | `src/` | The app (`main.cpp`, `pgr4_app.h`), shared support (`core/`) and test tooling (`platform/`). |
 | `config/` | Names for the game's statically linked XDK 6132 Direct3D and XAPI functions, used by codegen and the tooling's hooks. |
 | `pgr4_config.toml`, `pgr4_manifest.toml` | Codegen configuration. |
-| `cmake/` | The shader extraction and recompile build (`pgr4_shaders`, `pgr4_shader_cache_gen`). |
+| `cmake/` | The shader extraction and recompile build (`pgr4_shaders`, `pgr4_shader_cache_gen`) and the native configuration. |
 | `scripts/` | Shader extraction, the census check, the icon generator and reverse-engineering helpers (`scripts/re/`). |
-| `tools/` | `pgr4_dump_image`. |
-| `thirdparty/` | XenosRecomp. |
+| `tools/` | `pgr4_dump_image` and `pgr4_prelink`. |
+| `thirdparty/` | The ReXGlue SDK, plume, XenosRecomp, miniz and zstd. |
 | `docs/` | The native renderer plan and findings. |
 
 ## License

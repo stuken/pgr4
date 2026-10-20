@@ -16,6 +16,12 @@
 #include "platform/silent_audio.h"
 #include <rex/cvar.h>
 
+#ifdef PGR4_NATIVE_GPU
+#include <cstdlib>
+
+#include <rex/logging.h>
+#endif
+
 REXCVAR_DECLARE(bool, pgr4_null_audio);
 
 class Pgr4App : public rex::ReXApp {
@@ -29,7 +35,14 @@ class Pgr4App : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#ifdef PGR4_NATIVE_GPU
+    // Null graphics makes Runtime::Setup skip the SDK GPU; the native
+    // renderer is to come up in OnPreLaunchModule.
+    config.graphics = nullptr;
+    config.gpu_plugin.clear();
+#else
     config.gpu_plugin = "xenos";
+#endif
     if (REXCVAR_GET(pgr4_null_audio))
       config.audio_factory = REX_AUDIO_BACKEND(pgr4::platform::SilentAudioSystem);
 #ifdef _WIN32
@@ -56,6 +69,16 @@ class Pgr4App : public rex::ReXApp {
 
   void OnPreLaunchModule() override {
     pgr4::platform::InstallGuestAbortLogger();
+#ifdef PGR4_NATIVE_GPU
+    // The native build links the shader cache but has no renderer yet
+    // (docs/native-renderer-plan.md, Phase 5), and the game cannot run
+    // without a GPU. The module launches as soon as this returns, so a queued
+    // quit would leave the guest running GPU-less; exit here instead.
+    REXLOG_ERROR("pgr4: the native renderer is not implemented yet; "
+                 "build with PGR4_NATIVE_GPU=OFF to play");
+    rex::FlushLogging();
+    std::_Exit(1);
+#endif
   }
 
   // Override virtual hooks for customization:
