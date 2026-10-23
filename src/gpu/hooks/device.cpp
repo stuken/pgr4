@@ -186,6 +186,27 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type,
   return 0;
 }
 
+// (device, D3DPRESENT_PARAMETERS*). The game calls it once, straight after
+// creating the device (sub_82317A80). The guest body frees the device's ring
+// and reallocates real ones through SetRingBufferParameters, waits for the
+// GPU to go idle and sets the display mode, none of which applies to a
+// device whose ring is a discard buffer and whose display is plume's. The
+// device keeps the default surfaces it was created with.
+u32 D3DDevice_Reset_hook(u32 device, u32 params) {
+  const auto *pp = pgr4::mem::at<const PresentParameters>(params);
+  PGR4_INFO("D3DDevice_Reset 0x{:08X}: {}x{} format 0x{:08X} (ignored)", device,
+            pp ? u32(pp->BackBufferWidth) : 0, pp ? u32(pp->BackBufferHeight) : 0,
+            pp ? u32(pp->BackBufferFormat) : 0);
+  return 0;
+}
+
+// Only D3DDevice_Initialize, Reset and Shutdown call it, all handled above.
+u32 D3DDevice_SetRingBufferParameters_hook(u32 /*device*/, u32 /*params*/) {
+  PGR4_WARN_FIRST(2, "D3DDevice_SetRingBufferParameters: ignored, the ring is a "
+                     "discard buffer");
+  return 0;
+}
+
 // The Xenon ABI reserves a GPR slot for every float argument, so Z in f1 also
 // consumes r8 while SDK marshaling numbers integer args without skipping it.
 // The placeholder absorbs r8 so Stencil reads r9 (D3DDevice_Clear, 0x826D1A08,
@@ -305,3 +326,5 @@ REX_HOOK(D3DDevice_Clear, D3DDevice_Clear_hook);
 REX_HOOK(D3DDevice_ClearF, D3DDevice_ClearF_hook);
 REX_HOOK(D3DDevice_Swap, D3DDevice_Swap_hook);
 REX_HOOK(D3D__MakeSpace, D3D__MakeSpace_hook);
+REX_HOOK(D3DDevice_Reset, D3DDevice_Reset_hook);
+REX_HOOK(D3DDevice_SetRingBufferParameters, D3DDevice_SetRingBufferParameters_hook);

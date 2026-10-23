@@ -99,6 +99,9 @@ enum class D3DDeclType : u32 {
   kUShort2N = 0x2C2059,
   kUShort4N = 0x1A205A,
   kUInt1 = 0x2C82A1,
+  // UINT1 with the signed bit (8) set. PGR4 binds one as BLENDINDICES0 at
+  // offset 20 of a 24-byte vertex.
+  kInt1 = 0x2C83A1,
   kUDec3 = 0x2A2287,
   kDec3N = 0x2A2187,
   kDec3NAlt = 0x2A2190,

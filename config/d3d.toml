@@ -91,6 +91,7 @@
 0x826CBEE0 = { name = "D3DDevice_Resolve" } # (dev, flags, rect, dest, point, level, slice, colour, z in f1, ...)
 0x826CCE88 = { name = "D3D_AllocDevice" }
 0x826CCFB0 = { name = "D3DDevice_Release" } # reference count at +0x3C
+0x826CD008 = { name = "D3DDevice_Reset" } # by behaviour: (dev, params): SetRingBufferParameters(params+72), BlockUntilIdle, display mode; the game calls it once after creating the device
 0x826CD270 = { name = "Direct3D_CreateDevice" } # (adapter, type, window, behaviour, params, out): 0x5780 bytes; type 2 = command-buffer device
 0x826CDA98 = { name = "D3D__AllocCommandMemory" } # (dev, dwords, align)
 0x826CE320 = { name = "D3DDevice_BlockOnFence" } # (fence) -> wait on the global device, reason 6
@@ -98,6 +99,7 @@
 0x826CE9C0 = { name = "D3DDevice_InsertFence" } # (dev) -> fence
 0x826CE9F8 = { name = "D3DDevice_IsFencePending" } # (fence)
 0x826CEA70 = { name = "D3DResource_IsBusy" } # IsFencePending on the resource's fence (+8)
+0x826CEB48 = { name = "D3DDevice_BlockUntilIdle" } # waits on the current fence, then spins while +0x2AF8 is set
 0x826CEC18 = { name = "D3DDevice_SetRingBufferParameters" } # calls VdInitializeRingBuffer
 0x826CF0C8 = { name = "D3DResource_Destroy" } # switch on Common bits 0-3 (types 1-9)
 0x826CF5F8 = { name = "D3DResource_AddRef" } # +4; a level surface also AddRefs its parent

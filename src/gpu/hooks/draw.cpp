@@ -48,8 +48,8 @@ REXCVAR_DEFINE_INT32(pgr4_trace_frame_count, 1, kCvarGroup,
                      "How many frames pgr4_trace_frame traces, from N on");
 REXCVAR_DEFINE_STRING(pgr4_trace_vs, "", kCvarGroup,
                       "In the pgr4_trace_frame frames, trace only the draws of the "
-                      "VS with this hash (hex), with its constants and first "
-                      "stream records");
+                      "VS with these hashes (hex, comma-separated), with their "
+                      "constants and first stream records");
 REXCVAR_DEFINE_STRING(pgr4_debug_fill_depth_resolve, "", kCvarGroup,
                       "Bring-up experiment: fill each depth resolve's guest "
                       "texture memory with this 32-bit value (hex), as if the "
@@ -423,8 +423,17 @@ bool TracedVertexShader() {
   auto &s = pgr4::gpu::state();
   std::lock_guard lock(s.mutex);
   const auto *vs = s.vertex_shader;
-  return vs && vs->shaderCacheEntry &&
-         std::format("{:016X}", vs->shaderCacheEntry->hash) == wanted;
+  if (!vs || !vs->shaderCacheEntry)
+    return false;
+  // A comma-separated list of hashes.
+  const std::string hash = std::format("{:016X}", vs->shaderCacheEntry->hash);
+  for (size_t pos = 0; pos <= wanted.size();) {
+    const size_t end = std::min(wanted.find(',', pos), wanted.size());
+    if (wanted.compare(pos, end - pos, hash) == 0)
+      return true;
+    pos = end + 1;
+  }
+  return false;
 }
 
 // pgr4_trace_vs: every non-zero VS constant of the draw, and the records of
@@ -435,14 +444,7 @@ void TraceVertexShaderInputs(const D3DDevice &dev, const DrawArgs &args) {
   const std::string &wanted = REXCVAR_GET(pgr4_trace_vs);
   if (wanted.empty())
     return;
-  const pgr4::gpu::GuestShader *vs;
-  {
-    auto &s = pgr4::gpu::state();
-    std::lock_guard lock(s.mutex);
-    vs = s.vertex_shader;
-  }
-  if (!vs || !vs->shaderCacheEntry ||
-      std::format("{:016X}", vs->shaderCacheEntry->hash) != wanted)
+  if (!TracedVertexShader())
     return;
   static u32 s_frame = 0, s_draws = 0;
   if (s_frame != pgr4::gpu::PresentCount()) {

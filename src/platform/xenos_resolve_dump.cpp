@@ -394,10 +394,22 @@ REX_HOOK_RAW(D3DDevice_DrawVertices) {
 
 // (device, primitive, base vertex, start index, index count).
 REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
-  if (Tracing())
+  if (Tracing()) {
+    // The VS dirty mask, the world translation (c0-c2 .w), the eye (c24) and
+    // c44, the car shaders' g_MeshCompressScale, as the guest set them.
+    std::string consts;
+    if (const auto *d = pgr4::mem::at<const D3DDevice>(ctx.r3.u32))
+      consts = std::format(" vsmask={:016X} world=({:.4g},{:.4g},{:.4g}) eye=({:.4g},{:.4g},{:.4g}) c44=({:.6g},{:.6g},{:.6g},{:.6g})",
+                           u64(d->m_Mask[0]), float(d->vsFloatConstants[0][3]),
+                           float(d->vsFloatConstants[1][3]), float(d->vsFloatConstants[2][3]),
+                           float(d->vsFloatConstants[24][0]), float(d->vsFloatConstants[24][1]),
+                           float(d->vsFloatConstants[24][2]), float(d->vsFloatConstants[44][0]),
+                           float(d->vsFloatConstants[44][1]), float(d->vsFloatConstants[44][2]),
+                           float(d->vsFloatConstants[44][3]));
     TraceCall("DrawIndexed", ctx,
-              std::format(" prim={} base={} start={} n={}{}", ctx.r4.u32, ctx.r5.s32,
-                          ctx.r6.u32, ctx.r7.u32, DescribeBuffers(ctx.r3.u32)));
+              std::format(" prim={} base={} start={} n={}{}{}", ctx.r4.u32, ctx.r5.s32,
+                          ctx.r6.u32, ctx.r7.u32, DescribeBuffers(ctx.r3.u32), consts));
+  }
   __imp__D3DDevice_DrawIndexedVertices(ctx, base);
 }
 

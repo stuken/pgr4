@@ -354,6 +354,9 @@ plume::RenderFormat ConvertDeclType(D3DDeclType type) {
   case D3DDeclType::kUShort4N:
     return plume::RenderFormat::R16G16B16A16_UNORM;
   case D3DDeclType::kUInt1:
+  // The shaders declare BLENDINDICES as uint4, so the signed form binds UINT
+  // too: the input assembler passes the bits either way.
+  case D3DDeclType::kInt1:
     return plume::RenderFormat::R32_UINT;
   case D3DDeclType::kDec3NAlt:
   case D3DDeclType::kDec3NAlt2:
