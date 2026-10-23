@@ -16,11 +16,11 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 
 | Phase | State |
 |---|---|
-| 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode every resolve of a race frame. `pgr4_trace_frame` is ported (Phase 4). Still open: reference dumps of the garage, a night race and a rain race. See Phase 0 findings. |
-| 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. Phase 4 found a second creation path, `D3DDevice_Create*Shader`, which the census now hooks too; the front end and a race do not reach it. See Phase 1 findings. |
+| 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode every resolve of a race frame. `pgr4_trace_frame` is ported (Phase 4), and Phase 4's Custom Match runs dumped night, rain, snow and bike race frames. Still open: reference dumps of a garage. See Phase 0 findings. |
+| 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. Phase 4 found a second creation path, `D3DDevice_Create*Shader`, which the census now hooks too; the front end and a race do not reach it. Night, rain, snow, bike and burnout runs still create 967 of 990, so the 23 are not weather or tyre-smoke shaders. See Phase 1 findings. |
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
-| 4. D3D identification (XDK 6132) | **Exit met for a day race; other race kinds still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Left: trace night, rain and snow races, a bike race and a cockpit view. See Phase 4 findings. |
+| 4. D3D identification (XDK 6132) | **Exit met for a day race; other race kinds still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow and bike races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and nothing adds a pass. Left: a cockpit view (no pad button changed the camera) and a day race in rain or fog. See Phase 4 findings. |
 | 5. Native renderer bring-up | **Not started.** |
 | 6. Hardening and performance | **Not started.** |
 
@@ -576,6 +576,34 @@ the quarter-resolution view, 7e3 EDRAM colour as in PGR3, float depth with
 reversed Z, and a second shadow map. MRT does not appear (render target 1 is
 only ever set to null).
 
+**Other race kinds** (`scripts/runs/custom_race.sh`, results in
+`scratch/runs/`). The front end's **Custom Match** (Single Player, three
+`right`s from Arcade Mode) sets city, weather and vehicle directly, so one
+script reaches every kind: Street Race, then a weather from the grid (row 1
+clear, light rain, heavy rain, cloudy; row 2 snow, fog, heavy fog, storm;
+row 3 icy, showers), the lobby, optionally a vehicle change, and Start. Its
+default city is Tokyo at night. Each run traced and dumped one race frame
+with the census on:
+
+| Race (Tokyo, Enzo unless noted) | Resolves | Against the day race |
+|---|---|---|
+| night, clear | 41 | no shadow passes (neither the 512x512 nor the 256x256 depth map); everything else the same, bloom included |
+| night, heavy rain | 28 | as clear night, and **no bloom chain** (13 resolves fewer). The rain adds no target or resolve: it is drawn inside the existing passes |
+| night, snow | 28 | the same as heavy rain |
+| night, clear, **Ducati Monster S4RS** | 41 | the same as the clear night car race |
+
+Every kind keeps the two-tile 2x MSAA main scene, the 4x environment cube
+and the 4x quarter-resolution view, and none reaches `RunCommandBuffer`, the
+Z pass or `Create*Shader`. Weather and bikes therefore add no render target,
+format or pass to model; they only switch passes off.
+
+Two things are still open. **No cockpit view:** none of the pad's buttons
+(`Y`, `Back`, `X`, `B`, `LB`, `RB`, `LS`, `RS`, the D-pad) changed the camera
+in a Custom Match race (`up` and `left` change the music track), so the
+lobby's "Cameras" option is probably locking it. **Day weather:** Tokyo is
+night only, so a day race in rain or fog needs another city from the
+Custom Match city grid.
+
 ---
 
 ## Approach
@@ -636,8 +664,9 @@ reference comes first.
    `Settings::Init` belongs to the native renderer (Phase 5), as in pgr3.
 4. **Scripted runs to reference scenes**, in seconds from boot (pgr3 quirks
    §1). **Done:** the boot movies, title, front end and a day race (St
-   Petersburg, overcast). **Left:** a garage, a night race and a **rain
-   race**. Dump them with `--readback_resolve=full` into `scratch/`.
+   Petersburg, overcast), and from Phase 4 a night race, a rain race, a snow
+   race and a bike race (`scripts/runs/custom_race.sh`). **Left:** a garage.
+   Dump them with `--readback_resolve=full` into `scratch/`.
 5. **Done:** the icon `.rc` was already `src/pgr4.rc.in`; `pgr4_app.h` now
    follows pgr3's xenos-build layout (`OnPreSetup` with `pgr4_null_audio`,
    the abort logger in `OnPreLaunchModule`). `OnPostInitLogging` comes with
@@ -659,10 +688,11 @@ the native build, or video of the original).
    `shaders.csv` has a `name` column from the `.updb` path.
 3. **Done:** the replay takes all ten stack-built shaders.
 4. **Census, started:** `shader_census.cpp` (hooking
-   `XGGetMicrocodeShaderParts`) and `check_shader_census.py` are ported. The
-   front end and a day race are covered (967 of 990). **Left:** a race in
-   each weather type, a bike race, photo mode, replays and split screen,
-   watching the 23 listed in Phase 1 findings. None has come from
+   `XGGetMicrocodeShaderParts`, and since Phase 4 `Create*Shader` too) and
+   `check_shader_census.py` are ported. The front end, a day race and
+   Phase 4's night, rain, snow, bike and burnout races are covered, still
+   967 of 990. **Left:** photo mode, replays and split screen, watching the
+   23 listed in Phase 1 findings. None has come from
    `.pak`/`.pak_hrd`/`.stream2` so far.
 5. **Done:** there is no hot-reload path; the `DontShip/Shaders/...` names are
    labels (Phase 1 findings).
@@ -770,7 +800,8 @@ enum is the later one.
 5. **Trace a race frame of each kind** (day, night, rain, snow; car and bike;
    a cockpit view) with `pgr4_trace_frame`, and fill in the pass table:
    targets, sizes, MSAA counts, formats, EDRAM bases, MRT, depth resolves and
-   rect lists. (Day done; the rest need scripts that reach those races.)
+   rect lists. (Done for day, night, rain, snow and a bike; a cockpit view
+   and a day race in rain or fog are still to reach.)
 
 **Exit:** a PGR4 equivalent of pgr3's hook table (pgr3 plan, Phase 4
 findings), every address named, `gpu/d3d.h` rewritten for 6132, and the pass
@@ -798,9 +829,12 @@ table filled in.
 4. **Model what is new in PGR4 when the trace shows it.** These are expected
    from the content but not yet seen:
    - **weather:** rain on the screen and windscreen, wet-road reflections,
-     snow, fog and storm lighting. These may bring particles, memexport,
-     additional render targets or refraction resolves;
-   - **bikes and their riders** (new skinning or vertex formats);
+     snow, fog and storm lighting. Phase 4's traces show rain and snow add no
+     render target, resolve or memexport (no shader uses it); they draw inside
+     the existing passes and switch bloom off, so what is left is shader and
+     blend correctness, checked against the Phase 4 dumps;
+   - **bikes and their riders** (new skinning or vertex formats; the bike
+     race has the same passes as a car race);
    - **photo mode, replays, Gotham TV and split screen**, which are likely to
      use predicated tiling, larger targets or picture-in-picture corners
      (pgr3 quirks §3);
