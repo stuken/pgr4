@@ -231,6 +231,19 @@ constexpr u32 kD3DDevTypeCommandBuffer = 2;
 // than recording a command buffer and running it.
 constexpr u32 kVehicleDisableCommandBuffersGuestAddr = 0x82AAABE4;
 
+// The GPU (physical) address D3D writes into fetch constants for a virtual
+// one: the low 29 bits, plus 4 KB for the 0xE0000000 range (the rlwinm/addi
+// 512 sequence in SetStreamSource, SetTexture and the ring code).
+constexpr u32 GpuAddress(u32 va) {
+  return (va & 0x1FFFFFFFu) + ((((va >> 20) + 0x200u) & 0x1000u));
+}
+static_assert(GpuAddress(0xB4F27734u) == 0x14F27734u);
+static_assert(GpuAddress(0xE0001000u) == 0x00002000u);
+
+// The vertex fetch constant D3DDevice_SetStreamSource writes for a stream:
+// three 2-dword vertex fetches per 6-dword slot, stream n at 95 - n.
+constexpr u32 kStreamVertexFetchBase = 95;
+
 // dword[0] bits [1:0] of a fetch constant tag what it describes.
 constexpr u32 kFetchTypeMask = 0x3;
 constexpr u32 kFetchTypeTexture = 2;
@@ -453,6 +466,14 @@ static_assert(offsetof(D3DDevice, pixelShader) == 0x318C);
 static_assert(offsetof(D3DDevice, vertexShader) == 0x3190);
 static_assert(offsetof(D3DDevice, tileCount) == 0x31C4);
 static_assert(offsetof(D3DDevice, behaviorFlags) == 0x5708);
+
+// Head of the device's query-slot pool (D3DDevice_CreateQuery takes result
+// slots from it through sub_826D2C70): a page record {u32 used[2]; u32 data;
+// u32 next}, as in 2099 (+0x4FDC there). D3DDevice_Initialize leaves a full,
+// empty record here (both used words 0xFFFFFFFF), so the first allocation adds
+// a real page after it; a zeroed record would hand out slots at a null data
+// pointer.
+constexpr u32 kDeviceQuerySlotPool = 0x5424;
 
 // xboxkrnl VdGlobalDevice, imported at this address in the patched image (it
 // resolves to the same kernel variable as pgr3's 0x820005A0). D3D's resource

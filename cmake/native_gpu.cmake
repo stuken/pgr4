@@ -1,9 +1,7 @@
 # The native renderer (PGR4_NATIVE_GPU): pgr3's plume-based Xenos translation
 # layer (rr6's before it), fed by the XenosRecomp shader cache, in place of the
-# SDK's emulated GPU. The guest's D3D library is to be replaced by REX_HOOKs in
-# src/gpu/hooks. Ported from pgr3's cmake/native_gpu.cmake; until the renderer
-# is (docs/native-renderer-plan.md, Phase 5) the exes link the shader cache and
-# exit at launch.
+# SDK's emulated GPU. The guest's D3D library is replaced by REX_HOOKs in
+# src/gpu/hooks. Ported from pgr3's cmake/native_gpu.cmake.
 #
 # Expects the pgr4 target (already through rexglue_setup_target),
 # PGR4_SOURCES, PGR4_COMMON_SOURCES, PGR4_ICON_RC, PGR4_GEN_DIR,
@@ -78,8 +76,14 @@ set_source_files_properties(
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/zstd/zstddeclib.c"
     PROPERTIES COMPILE_OPTIONS "-w")
 
-# The renderer's host shaders (pgr4_host_shader, cmake/shaders.cmake) come with
-# its port in Phase 5.
+foreach(shader IN ITEMS copy_vs imgui_vs)
+    pgr4_host_shader(${shader} vs_6_0)
+endforeach()
+foreach(shader IN ITEMS
+        copy_color_ps copy_depth_ps debug_solid_ps fxaa_ps gamma_correction_ps
+        pfx_occlusion_count_ps imgui_ps resolve_msaa_2x_ps resolve_msaa_4x_ps)
+    pgr4_host_shader(${shader} ps_6_0)
+endforeach()
 
 foreach(target IN LISTS PGR4_NATIVE_TARGETS)
     target_sources(${target} PRIVATE

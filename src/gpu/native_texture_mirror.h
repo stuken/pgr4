@@ -1,0 +1,76 @@
+/**
+ * @file  gpu/native_texture_mirror.h
+ * @brief   Host mirrors of guest textures and resolve targets, keyed by guest
+ *          VA. RR6 creates its textures without a hooked D3D create call, so
+ *          a texture is mirrored the first time a draw binds it: the Xenos
+ *          fetch constant is decoded, the texels untiled and a host texture
+ *          built. D3DResource_Destroy and XPhysicalFree evict.
+ * @copyright Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
+ *            All rights reserved.
+ * @license   BSD 3-Clause License
+ *            See LICENSE file in the project root for full license text.
+ */
+#pragma once
+
+#include <functional>
+#include <vector>
+
+#include <rex/types.h>
+
+#include "gpu/resources.h"
+
+namespace pgr4::gpu {
+
+// Builds the host mirror of a guest texture, replacing any cached one at the
+// same VA. nullptr when the format or dimension is unsupported or the build
+// fails.
+GuestTexture *GetOrCreateNativeMirror(u32 guest_va);
+
+// RR6: the mirror of an unhooked guest texture, built on first use and rebuilt
+// when its fetch constant changes. nullptr when unsupported.
+GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va);
+
+// Bumped whenever a mirror or resolve target is created, rebuilt or evicted:
+// a binding made under the same generation (and frame) still holds.
+u64 TextureMirrorGeneration();
+
+// RR6: visits every live resolve target (frame dumps).
+void ForEachResolveTarget(
+    const std::function<void(u32 guest_va, GuestTexture *tex)> &fn);
+
+// RR6: the resolve target already backing a guest texture, or nullptr.
+GuestTexture *FindResolveTarget(u32 guest_va);
+
+// The host format a resolve into guest texture 'guest_va' writes: its own
+// format where the host models it (k_8_8_8_8, which clamps what a 7e3 or FP16
+// surface resolves into it), else the source surface's 'src_format'.
+plume::RenderFormat ResolveTargetHostFormat(u32 guest_va,
+                                            plume::RenderFormat src_format);
+
+// RR6: the host texture D3DDevice_Resolve writes for a guest texture, created
+// (or recreated) at the fetch constant's size in 'format'.
+// 'scale', when not 0, overrides the host scale (a depth resolve takes its
+// source surface's, so a shadow map matches its shadow surface).
+GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
+                                       u32 scale = 0);
+
+// RR6: forgets everything mirrored for a destroyed guest texture
+// (D3DResource_Destroy): its texel mirror, its resolve target and its cached
+// signature, so a texture later created at the same VA is built fresh rather
+// than matched to the old one. Returns whether anything was mirrored.
+bool EvictGuestTexture(u32 guest_va);
+
+// RR6: EvictGuestTexture for every mirrored texture whose base or mip address
+// lies in [begin, end), a freed allocation. RR6's fetch constants hold virtual
+// addresses, so the range is one too. Returns the count.
+u32 EvictGuestTexturesInRange(u32 begin, u32 end);
+
+// Queues the host GuestTexture for deferred teardown.
+void EvictNativeTexture(u32 guest_va);
+
+// Free mirrors evicted while frame slot 'slot' was recording. Drained
+// post-fence so the descriptor write + free cannot race an in-flight command
+// list.
+void DrainEvictedNativeTextures(u32 slot);
+
+} // namespace pgr4::gpu

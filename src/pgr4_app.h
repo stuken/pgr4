@@ -16,13 +16,16 @@
 #include "platform/silent_audio.h"
 #include <rex/cvar.h>
 
-#ifdef PGR4_NATIVE_GPU
-#include <cstdlib>
-
-#include <rex/logging.h>
-#endif
-
 REXCVAR_DECLARE(bool, pgr4_null_audio);
+
+#ifdef PGR4_NATIVE_GPU
+#include <rex/logging.h>
+
+#include "core/shutdown.h"
+#include "gpu/device.h"
+#include "gpu/imgui_overlay_drawer.h"
+#include "gpu/settings.h"
+#endif
 
 class Pgr4App : public rex::ReXApp {
  public:
@@ -36,8 +39,8 @@ class Pgr4App : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
 #ifdef PGR4_NATIVE_GPU
-    // Null graphics makes Runtime::Setup skip the SDK GPU; the native
-    // renderer is to come up in OnPreLaunchModule.
+    // Null graphics makes Runtime::Setup skip the SDK GPU. The plume
+    // renderer comes up in OnPreLaunchModule instead.
     config.graphics = nullptr;
     config.gpu_plugin.clear();
 #else
@@ -67,22 +70,60 @@ class Pgr4App : public rex::ReXApp {
     window()->SetTitle("Project Gotham Racing 4");
   }
 
-  void OnPreLaunchModule() override {
-    pgr4::platform::InstallGuestAbortLogger();
 #ifdef PGR4_NATIVE_GPU
-    // The native build links the shader cache but has no renderer yet
-    // (docs/native-renderer-plan.md, Phase 5), and the game cannot run
-    // without a GPU. The module launches as soon as this returns, so a queued
-    // quit would leave the guest running GPU-less; exit here instead.
-    REXLOG_ERROR("pgr4: the native renderer is not implemented yet; "
-                 "build with PGR4_NATIVE_GPU=OFF to play");
-    rex::FlushLogging();
-    std::_Exit(1);
-#endif
+  // Binds to the plume device lazily, once OnPreLaunchModule creates it. The
+  // SDK owns and tears this down.
+  std::unique_ptr<rex::ui::ImmediateDrawer> OnCreateImmediateDrawer() override {
+    return std::make_unique<pgr4::gpu::ImGuiOverlayDrawer>();
   }
 
+  // The first hook after rex::cvar::LoadConfig: the renderer's settings adopt
+  // the config file and command line here and follow later cvar writes.
+  void OnPostInitLogging() override { pgr4::gpu::Settings::Get().Init(); }
+
+  void OnPreLaunchModule() override {
+    pgr4::platform::InstallGuestAbortLogger();
+    // Registered here, where the UI thread is pumping: the shutdown sequence
+    // has to run on it.
+    pgr4::SetShutdownDispatcher([this](std::function<void()> fn) {
+      return app_context().CallInUIThread(std::move(fn));
+    });
+    pgr4::SetShutdownUIPump(
+        [this] { app_context().ExecutePendingFunctionsFromUIThread(); });
+
+    if (!pgr4::gpu::Video::CreateHostDevice(window())) {
+      REXLOG_ERROR("pgr4: native renderer init failed");
+      app_context().QuitFromUIThread();
+      return;
+    }
+    pgr4::gpu::Video::SetOverlayDrawHook(
+        [this](plume::RenderCommandList* cmd, plume::RenderFramebuffer* fb,
+               u32 w, u32 h) {
+          if (!imgui_drawer() || pgr4::IsShuttingDown() ||
+              !imgui_drawer()->HasDialogs())
+            return;
+          app_context().CallInUIThreadSynchronous([this, cmd, fb, w, h] {
+            pgr4::gpu::ReblueUIDrawContext ctx(w, h, cmd, fb);
+            imgui_drawer()->Draw(ctx);
+          });
+        });
+  }
+
+  void OnWindowPixelSizeChanged(u32, u32) override {
+    pgr4::gpu::Video::RequestResize();
+  }
+
+  bool OnWindowCloseRequested() override {
+    pgr4::RequestShutdown(pgr4::ShutdownReason::WindowClose);
+    return false;  // unreachable
+  }
+#else
+  void OnPreLaunchModule() override {
+    pgr4::platform::InstallGuestAbortLogger();
+  }
+#endif
+
   // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
