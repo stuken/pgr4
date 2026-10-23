@@ -601,8 +601,11 @@ Two things are still open. **No cockpit view:** none of the pad's buttons
 (`Y`, `Back`, `X`, `B`, `LB`, `RB`, `LS`, `RS`, the D-pad) changed the camera
 in a Custom Match race (`up` and `left` change the music track), so the
 lobby's "Cameras" option is probably locking it. **Day weather:** Tokyo is
-night only, so a day race in rain or fog needs another city from the
-Custom Match city grid.
+night only, so a day race in rain or fog needs another city. London is on
+the grid (`CITY="up up left"`) and has day weather (Clear, Overcast, Light
+Rain along its top row), but its menus drop presses while their previews
+load, and three timed runs each lost a different press. A day weather race
+needs a script that waits on what the screen shows, or one manual run.
 
 ---
 
