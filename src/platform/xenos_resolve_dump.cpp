@@ -14,9 +14,17 @@
 // fourth byte) are what a shader would sample through the fetch swizzle. The
 // plugin keeps resolve output on the GPU unless told otherwise, so run with
 //   --readback_resolve=full --d3d12_readback_resolve=true
-// Ported from pgr3, with its endian, tiled-offset and FP16 fixes. pgr3's
-// pgr3_trace_frame lives here too; it waits for Phase 4 to name the draw and
-// state functions it hooks in XDK 6132.
+// Ported from pgr3, with its endian, tiled-offset and FP16 fixes.
+//
+// pgr4_trace_frame=N logs the D3D calls of present frames N to N+2: render
+// targets and depth with their surface headers, draws with their textures,
+// streams, index buffer, shaders and the main register shadows, clears,
+// resolves and tiling. Every offset comes from gpu/d3d.h, so the log is also
+// the live check of that header. Some 6132 paths log whenever they run,
+// traced frame or not, because whether PGR4 reaches them at all is the
+// question: a second Direct3D_CreateDevice (type 2 makes a command-buffer
+// device), D3DDevice_RunCommandBuffer and the Z pass. shader_census.cpp
+// warns on D3DDevice_Create{Vertex,Pixel}Shader the same way.
 
 #include <algorithm>
 #include <bit>
@@ -40,10 +48,15 @@
 #include "core/logging.h"
 #include "core/memory_helpers.h"
 #include "core/settings.h"
+#include "gpu/d3d.h"
 
 REXCVAR_DEFINE_STRING(pgr4_dump_frames, "", kCvarGroup,
                       "Comma-separated present frame numbers whose resolve "
                       "targets are written as BMPs in the user data folder");
+
+REXCVAR_DEFINE_INT32(pgr4_trace_frame, 0, kCvarGroup,
+                     "Log the D3D calls of this present frame and the next two "
+                     "(render targets, draws with their textures, resolves)");
 
 REXCVAR_DEFINE_BOOL(pgr4_dump_raw, false, kCvarGroup,
                     "With pgr4_dump_frames, also write each resolve target's "
@@ -52,22 +65,123 @@ REXCVAR_DEFINE_BOOL(pgr4_dump_raw, false, kCvarGroup,
 REX_EXTERN(__imp__D3DDevice_Resolve);
 REX_EXTERN(__imp__D3DDevice_InsertFence);
 REX_EXTERN(__imp__D3DDevice_BlockOnFence);
+REX_EXTERN(__imp__D3DDevice_SetRenderTarget);
+REX_EXTERN(__imp__D3DDevice_SetDepthStencilSurface);
+REX_EXTERN(__imp__D3DDevice_DrawVertices);
+REX_EXTERN(__imp__D3DDevice_DrawIndexedVertices);
+REX_EXTERN(__imp__D3DDevice_BeginVertices);
+REX_EXTERN(__imp__D3DDevice_Clear);
+REX_EXTERN(__imp__D3DDevice_BeginTiling);
+REX_EXTERN(__imp__D3DDevice_EndTiling);
+REX_EXTERN(__imp__D3DDevice_BeginZPass);
+REX_EXTERN(__imp__D3DDevice_EndZPass);
+REX_EXTERN(__imp__D3DDevice_RunCommandBuffer);
+REX_EXTERN(__imp__Direct3D_CreateDevice);
 
 namespace {
 
 namespace tu = rex::graphics::texture_util;
+using pgr4::gpu::D3DDevice;
 
-// D3DBaseTexture: XDK 6132's resource header is larger than 2099's, and the
-// fetch constant sits at +0x1C (2099: +0x10). D3DDevice_Resolve reads the
-// destination's pitch from +0x1C, base and format from +0x20, size from +0x24
-// and dimension from +0x30.
-constexpr u32 kTextureFetchOffset = 0x1C;
+constexpr u32 kTextureFetchOffset = offsetof(pgr4::gpu::D3DTexture, Format);
 
 std::mutex g_mutex;
 std::vector<u32> g_wanted;
 bool g_parsed = false;
 u32 g_frame = 0;    // presents completed
 u32 g_resolves = 0; // resolves so far in the current present
+
+bool Tracing() {
+  const i32 wanted = REXCVAR_GET(pgr4_trace_frame);
+  // Three presents: the plugin build's frames do not always hold a whole
+  // scene render between two presents.
+  return wanted > 0 && g_frame + 1 >= static_cast<u32>(wanted) &&
+         g_frame + 1 < static_cast<u32>(wanted) + 3;
+}
+
+template <typename T> const T *DeviceField(u32 dev, size_t offset) {
+  return pgr4::mem::at<const T>(dev + static_cast<u32>(offset));
+}
+
+// The state every draw line carries: render target 0, depth, the first four
+// textures, both shaders, the declaration and the register shadows that
+// decide how a draw blends and tests.
+void TraceCall(const char *what, PPCContext &ctx, const std::string &extra) {
+  const u32 dev = ctx.r3.u32;
+  const auto *d = pgr4::mem::at<const D3DDevice>(dev);
+  if (!d) {
+    PGR4_INFO("[xtrace] {}{} lr=0x{:08X}", what, extra, u32(ctx.lr));
+    return;
+  }
+  std::string t;
+  for (int i = 0; i < 4; ++i)
+    if (u32(d->textures[i]))
+      t += std::format(" t{}=0x{:08X}", i, u32(d->textures[i]));
+  PGR4_INFO("[xtrace] {}{} rt=0x{:08X} z=0x{:08X}{} vs=0x{:08X} ps=0x{:08X} decl=0x{:08X} "
+            "depth={:08X} blend0={:08X} color={:08X} mode={:08X} mask={:08X} lr=0x{:08X}",
+            what, extra, u32(d->renderTargets[0]), u32(d->depthStencil), t,
+            u32(d->vertexShader), u32(d->pixelShader), u32(d->vertexDeclaration),
+            u32(d->rbDepthControl), u32(d->rbBlendControl0), u32(d->rbColorControl),
+            u32(d->paSuScModeCntl), u32(d->rbColorMask), u32(ctx.lr));
+}
+
+// The resource headers a draw reads, decoded as gpu/d3d.h lays them out:
+// Common (type in bits 0-3: 1 VB, 2 IB), then a VB's fetch words at
+// +0x18/+0x1C, or an IB's base and size there (INDEX32 in Common bit 31).
+// Each stream also shows its device fetch constant (95 - stream), where
+// SetStreamSource folds in the offset.
+std::string DescribeBuffers(u32 dev) {
+  std::string out;
+  const auto *d = pgr4::mem::at<const D3DDevice>(dev);
+  if (!d)
+    return out;
+  for (int i = 0; i < 4; ++i) {
+    const u32 vb = u32(d->streams[i]);
+    if (!vb)
+      continue;
+    const auto *h = pgr4::mem::at<const pgr4::gpu::D3DVertexBuffer>(vb);
+    const u32 slot = 95 - i;
+    const auto *fc = DeviceField<be_u32>(dev, offsetof(D3DDevice, fetchConstants) + slot * 8);
+    if (h && fc)
+      out += std::format(" s{}=0x{:08X}{{c={:08X} rc={} f0={:08X} f1={:08X} dev={:08X}/{:08X} "
+                         "stride={}}}",
+                         i, vb, u32(h->resource.Common), u32(h->resource.ReferenceCount),
+                         u32(h->Fetch0), u32(h->Fetch1), u32(fc[0]), u32(fc[1]),
+                         u32(d->streamStrides[i]) * 4);
+  }
+  const u32 ib = u32(d->indexBuffer);
+  if (const auto *h = ib ? pgr4::mem::at<const pgr4::gpu::D3DIndexBuffer>(ib) : nullptr)
+    out += std::format(" ib=0x{:08X}{{c={:08X} base={:08X} size={}}}", ib,
+                       u32(h->resource.Common), u32(h->Address), u32(h->Size));
+  return out;
+}
+
+// A render target or depth surface: Common, RB_SURFACE_INFO (+0x18: pitch
+// bits 0-13, MSAA bits 16-17), RB_COLOR_INFO / RB_DEPTH_INFO (+0x1C: EDRAM
+// base bits 0-11, format bits 16-19), size and D3DFORMAT.
+std::string DescribeSurface(u32 surface) {
+  const auto *h = surface ? pgr4::mem::at<const pgr4::gpu::D3DSurface>(surface) : nullptr;
+  if (!h)
+    return std::string();
+  const u32 info = u32(h->SurfaceInfo), edram = u32(h->EdramInfo), size = u32(h->Size);
+  return std::format(" {{c={:08X} rc={} pitch={} msaa={} base={} fmt={} {}x{} d3dfmt={:08X} "
+                     "edram={}}}",
+                     u32(h->resource.Common), u32(h->resource.ReferenceCount), info & 0x3FFF,
+                     (info >> 16) & 3, edram & 0xFFF, (edram >> 16) & 0xF,
+                     ((size >> 18) & 0x3FFF) + 1, ((size >> 3) & 0x7FFF) + 1, u32(h->Format),
+                     u32(h->EdramSize));
+}
+
+// A texture's Common and the size and format from its fetch constant.
+std::string DescribeTexture(u32 texture) {
+  const auto *h = texture ? pgr4::mem::at<const pgr4::gpu::D3DTexture>(texture) : nullptr;
+  if (!h)
+    return std::string();
+  const u32 fc1 = u32(h->Format.dword[1]), fc2 = u32(h->Format.dword[2]);
+  return std::format(" {{c={:08X} fmt={} base={:08X} {}x{}}}", u32(h->resource.Common),
+                     fc1 & 0x3F, fc1 & 0xFFFFF000, (fc2 & 0x1FFF) + 1,
+                     ((fc2 >> 13) & 0x1FFF) + 1);
+}
 
 void ParseWanted() {
   if (g_parsed)
@@ -254,9 +368,122 @@ void DumpTexture(u32 frame, u32 seq, u32 va, u32 slice, const std::filesystem::p
 
 } // namespace
 
+// (device, index, surface).
+REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
+  if (Tracing())
+    PGR4_INFO("[xtrace] SetRenderTarget {} 0x{:08X}{} lr=0x{:08X} frame={}", ctx.r4.u32,
+              ctx.r5.u32, DescribeSurface(ctx.r5.u32), u32(ctx.lr), g_frame + 1);
+  __imp__D3DDevice_SetRenderTarget(ctx, base);
+}
+
+// (device, surface).
+REX_HOOK_RAW(D3DDevice_SetDepthStencilSurface) {
+  if (Tracing())
+    PGR4_INFO("[xtrace] SetDepthStencilSurface 0x{:08X}{} lr=0x{:08X} frame={}", ctx.r4.u32,
+              DescribeSurface(ctx.r4.u32), u32(ctx.lr), g_frame + 1);
+  __imp__D3DDevice_SetDepthStencilSurface(ctx, base);
+}
+
+// (device, primitive, start vertex, vertex count).
+REX_HOOK_RAW(D3DDevice_DrawVertices) {
+  if (Tracing())
+    TraceCall("Draw", ctx, std::format(" prim={} n={}{}", ctx.r4.u32, ctx.r6.u32,
+                                       DescribeBuffers(ctx.r3.u32)));
+  __imp__D3DDevice_DrawVertices(ctx, base);
+}
+
+// (device, primitive, base vertex, start index, index count).
+REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
+  if (Tracing())
+    TraceCall("DrawIndexed", ctx,
+              std::format(" prim={} base={} start={} n={}{}", ctx.r4.u32, ctx.r5.s32,
+                          ctx.r6.u32, ctx.r7.u32, DescribeBuffers(ctx.r3.u32)));
+  __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+}
+
+// (device, primitive, vertex count, stride) -> vertex data.
+REX_HOOK_RAW(D3DDevice_BeginVertices) {
+  if (Tracing())
+    TraceCall("BeginVertices", ctx,
+              std::format(" prim={} n={} stride={}", ctx.r4.u32, ctx.r5.u32, ctx.r6.u32));
+  __imp__D3DDevice_BeginVertices(ctx, base);
+}
+
+// (device, rect count, rects, flags, colour, z in f1, stencil).
+REX_HOOK_RAW(D3DDevice_Clear) {
+  if (Tracing())
+    TraceCall("Clear", ctx, std::format(" flags=0x{:X} colour={:08X} z={:.4g} stencil={}",
+                                        ctx.r6.u32, ctx.r7.u32, ctx.f1.f64, ctx.r9.u32));
+  __imp__D3DDevice_Clear(ctx, base);
+}
+
+// (device, flags, tile count, tile D3DRECTs, clear colour, z in f1, stencil).
+REX_HOOK_RAW(D3DDevice_BeginTiling) {
+  if (Tracing()) {
+    std::string rects;
+    const auto *r = pgr4::mem::at<const be_i32>(ctx.r6.u32);
+    for (u32 i = 0; r && i < std::min<u32>(ctx.r5.u32, 8); ++i)
+      rects += std::format(" ({},{})-({},{})", i32(r[i * 4]), i32(r[i * 4 + 1]),
+                           i32(r[i * 4 + 2]), i32(r[i * 4 + 3]));
+    TraceCall("BeginTiling", ctx,
+              std::format(" flags=0x{:X} tiles={}{}", ctx.r4.u32, ctx.r5.u32, rects));
+  }
+  __imp__D3DDevice_BeginTiling(ctx, base);
+}
+
+REX_HOOK_RAW(D3DDevice_EndTiling) {
+  if (Tracing())
+    TraceCall("EndTiling", ctx,
+              std::format(" r4=0x{:X} r5=0x{:X} r6=0x{:08X} r7=0x{:08X}", ctx.r4.u32,
+                          ctx.r5.u32, ctx.r6.u32, ctx.r7.u32));
+  __imp__D3DDevice_EndTiling(ctx, base);
+}
+
+// The Z pass replays the draws between Begin and End on the GPU with colour
+// off; the draws still pass through the hooks above once.
+REX_HOOK_RAW(D3DDevice_BeginZPass) {
+  PGR4_WARN_FIRST(4, "[xtrace] BeginZPass flags=0x{:X} lr=0x{:08X} frame={}", ctx.r4.u32,
+                  u32(ctx.lr), g_frame + 1);
+  if (Tracing())
+    TraceCall("BeginZPass", ctx, std::format(" flags=0x{:X}", ctx.r4.u32));
+  __imp__D3DDevice_BeginZPass(ctx, base);
+}
+
+REX_HOOK_RAW(D3DDevice_EndZPass) {
+  if (Tracing())
+    TraceCall("EndZPass", ctx, std::string());
+  __imp__D3DDevice_EndZPass(ctx, base);
+}
+
+// A command buffer's draws reach the GPU without passing the draw hooks.
+// PGR4's only caller is the vehicle renderer, which should not get here while
+// Vehicle.DisableCommandBuffers is set.
+REX_HOOK_RAW(D3DDevice_RunCommandBuffer) {
+  const auto *disable = pgr4::mem::at<const u8>(pgr4::gpu::kVehicleDisableCommandBuffersGuestAddr);
+  PGR4_WARN_FIRST(8, "[xtrace] RunCommandBuffer 0x{:08X} lr=0x{:08X} frame={} "
+                     "Vehicle.DisableCommandBuffers={}",
+                  ctx.r4.u32, u32(ctx.lr), g_frame + 1, disable ? u32(*disable) : 0xFFu);
+  __imp__D3DDevice_RunCommandBuffer(ctx, base);
+}
+
+// (adapter, type, window, behaviour, params, out device).
+REX_HOOK_RAW(Direct3D_CreateDevice) {
+  const u32 type = ctx.r4.u32, behaviour = ctx.r6.u32, out = ctx.r8.u32, lr = u32(ctx.lr);
+  __imp__Direct3D_CreateDevice(ctx, base);
+  const auto *slot = out ? pgr4::mem::at<const be_u32>(out) : nullptr;
+  const u32 device = slot ? u32(*slot) : 0;
+  PGR4_INFO("[xtrace] Direct3D_CreateDevice type={} behaviour=0x{:X} -> 0x{:08X} hr=0x{:08X} "
+            "lr=0x{:08X}",
+            type, behaviour, device, ctx.r3.u32, lr);
+}
+
 // (device, flags, source rect, dest texture, dest point, level, slice, clear
 // colour, z in f1, ...), as in 2099.
 REX_HOOK_RAW(D3DDevice_Resolve) {
+  if (Tracing())
+    TraceCall("Resolve", ctx,
+              std::format(" flags=0x{:X} dest=0x{:08X}{} slice={}", ctx.r4.u32, ctx.r6.u32,
+                          DescribeTexture(ctx.r6.u32), ctx.r9.u32));
   const u32 device = ctx.r3.u32;
   const u32 dest = ctx.r6.u32;
   const u32 slice = ctx.r9.u32;

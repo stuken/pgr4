@@ -1,6 +1,15 @@
 # XAPI functions statically linked into PGR4's default.xex (XAPILIB 2.0.6132.6,
 # title update 0.0.2.1 applied) that pgr4's host code hooks. Identified from
-# their bodies with scripts/re/funcdb.py.
+# their bodies with scripts/re/funcdb.py; all four allocators match pgr3's at
+# shape ratio 1.00.
+#
+# As in PGR3, the game overrides XMemAlloc and XMemFree: D3D allocates through
+# sub_8230C270 and frees through sub_8230BD20, so the XMemAlloc/XMemFree named
+# here are the unused XDK defaults (one caller each).
 
 [functions]
+0x826A8A68 = { name = "XMemAlloc" }
+0x826A8B00 = { name = "XMemFree" }
+0x826A8B30 = { name = "XPhysicalAlloc" } # a caller of MmAllocatePhysicalMemoryEx
+0x826A8BC0 = { name = "XPhysicalFree" } # MmFreePhysicalMemory
 0x826A8F00 = { name = "XInputGetState" } # (user, state) -> XamInputGetState(user, 1, state); the import's only caller

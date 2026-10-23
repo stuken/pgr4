@@ -1,15 +1,18 @@
 // pgr4 - ReXGlue Recompiled Project
 //
 // pgr4_shader_census: checks that the build's shader set (extracted from the
-// patched image, generated/shaders) is every shader the game creates. XDK 6132
-// titles create shaders the XG way, and every container passes through
-// XGGetMicrocodeShaderParts (config/d3d.toml), so that is where the census
-// looks. Each distinct container is written once to <user>/shader_census/
-// under the extractor's names (vs_<VA>.vso / ps_<VA>.pso), so
-// scripts/check_shader_census.py can compare the two directories byte for
-// byte. A container from outside the XEX image (one loaded from game data at
-// runtime, or built on the stack) is logged with its call chain. Ported from
-// pgr3's, which hooked D3DDevice_Create{Vertex,Pixel}Shader.
+// patched image, generated/shaders) is every shader the game creates. PGR4
+// creates shaders the XG way, every container passing through
+// XGGetMicrocodeShaderParts (config/d3d.toml), except when mercury's loaders
+// are asked for D3DDevice_Create{Vertex,Pixel}Shader (bit 2 of their flags),
+// which do not call it. The census hooks all three, and warns on the first
+// Create*Shader calls. Each distinct container is written once to
+// <user>/shader_census/ under the extractor's names (vs_<VA>.vso /
+// ps_<VA>.pso), so scripts/check_shader_census.py can compare the two
+// directories byte for byte. A container from outside the XEX image (one
+// loaded from game data at runtime, or built on the stack) is logged with its
+// call chain. Ported from pgr3's, which hooked only
+// D3DDevice_Create{Vertex,Pixel}Shader.
 
 #include <cstdio>
 #include <filesystem>
@@ -36,6 +39,8 @@ REXCVAR_DEFINE_BOOL(pgr4_shader_census, false, kCvarGroup,
                     "shader_census/ in the user data folder");
 
 REX_EXTERN(__imp__XGGetMicrocodeShaderParts);
+REX_EXTERN(__imp__D3DDevice_CreateVertexShader);
+REX_EXTERN(__imp__D3DDevice_CreatePixelShader);
 
 namespace {
 
@@ -120,6 +125,25 @@ REX_HOOK_RAW(XGGetMicrocodeShaderParts) {
   const u32 container = ctx.r3.u32;
   const u32 caller = u32(ctx.lr), sp = ctx.r1.u32;
   __imp__XGGetMicrocodeShaderParts(ctx, base);
+  if (REXCVAR_GET(pgr4_shader_census))
+    Record(container, caller, sp);
+}
+
+// (container) -> shader. Only mercury's loaders call these.
+REX_HOOK_RAW(D3DDevice_CreateVertexShader) {
+  const u32 container = ctx.r3.u32;
+  const u32 caller = u32(ctx.lr), sp = ctx.r1.u32;
+  PGR4_WARN_FIRST(8, "D3DDevice_CreateVertexShader 0x{:08X} from 0x{:08X}", container, caller);
+  __imp__D3DDevice_CreateVertexShader(ctx, base);
+  if (REXCVAR_GET(pgr4_shader_census))
+    Record(container, caller, sp);
+}
+
+REX_HOOK_RAW(D3DDevice_CreatePixelShader) {
+  const u32 container = ctx.r3.u32;
+  const u32 caller = u32(ctx.lr), sp = ctx.r1.u32;
+  PGR4_WARN_FIRST(8, "D3DDevice_CreatePixelShader 0x{:08X} from 0x{:08X}", container, caller);
+  __imp__D3DDevice_CreatePixelShader(ctx, base);
   if (REXCVAR_GET(pgr4_shader_census))
     Record(container, caller, sp);
 }

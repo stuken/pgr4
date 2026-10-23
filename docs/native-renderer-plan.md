@@ -12,15 +12,15 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 
 ---
 
-## Status (2026-10-20)
+## Status (2026-10-23)
 
 | Phase | State |
 |---|---|
-| 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode all 42 resolves of a race frame. Still open: `pgr4_trace_frame` (needs Phase 4 names), and reference dumps of the garage, a night race and a rain race. See Phase 0 findings. |
-| 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. See Phase 1 findings. |
+| 0. Baseline and tooling | **Exit met; references still to take.** Codegen and the xenos build work from a fresh tree. Ported from pgr3: `pgr4_input_script`, `pgr4_null_audio`, `pgr4_dump_frames`, `pgr4_dump_raw`, the abort logger, `scripts/re/funcdb.py` and `match_names.py`. A scripted run reaches a St Petersburg street race, and its dumps decode every resolve of a race frame. `pgr4_trace_frame` is ported (Phase 4). Still open: reference dumps of the garage, a night race and a rain race. See Phase 0 findings. |
+| 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. Phase 4 found a second creation path, `D3DDevice_Create*Shader`, which the census now hooks too; the front end and a race do not reach it. See Phase 1 findings. |
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
-| 4. D3D identification (XDK 6132) | **Not started.** This is the largest unknown. |
+| 4. D3D identification (XDK 6132) | **Exit met for a day race; other race kinds still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Left: trace night, rain and snow races, a bike race and a cockpit view. See Phase 4 findings. |
 | 5. Native renderer bring-up | **Not started.** |
 | 6. Hardening and performance | **Not started.** |
 
@@ -251,16 +251,19 @@ Things to watch later:
 
 ### Phase 1 findings
 
-**Shader creation is XG-style in 6132.** `D3DDevice_Create{Vertex,Pixel}Shader`
-is not linked. The game's `sub_822B34A0` (VS) and `sub_822B35F0` (PS) call
-`XGGetMicrocodeShaderParts(container, &parts)`, allocate the header and the
-physical microcode themselves (from a pool, or through `sub_8230BEB0`), fill
-the header with `XGSet{Vertex,Pixel}ShaderHeader`, copy the microcode and call
-`XGRegister{Vertex,Pixel}Shader(header, physical)`. The engine core's loaders
-(`sub_8286F7B0` VS, `sub_8286F9F0` PS) do the same with their own allocator.
-All five XG functions are named in `config/d3d.toml`. For Phase 4 and 5:
-the native renderer has to hook `XGRegister*Shader` (or the two creator
-pairs), not `Create*Shader` as in pgr3.
+**Shader creation is XG-style in 6132.** The game's `sub_822B34A0` (VS) and
+`sub_822B35F0` (PS) call `XGGetMicrocodeShaderParts(container, &parts)`,
+allocate the header and the physical microcode themselves (from a pool, or
+through `sub_8230BEB0`), fill the header with `XGSet{Vertex,Pixel}ShaderHeader`,
+copy the microcode and call `XGRegister{Vertex,Pixel}Shader(header, physical)`.
+The engine core's loaders (`sub_8286F7B0` VS, `sub_8286F9F0` PS) do the same
+with their own allocator. All five XG functions are named in
+`config/d3d.toml`. *Corrected in Phase 4:* `D3DDevice_Create{Vertex,Pixel}Shader`
+are linked after all. The engine core's loaders call them instead of the XG
+path when bit 2 of their flags is set, and they do not go through
+`XGGetMicrocodeShaderParts`, so this census could not see shaders created
+that way. The census now hooks them too. The native renderer has to hook
+`XGRegister*Shader` (or the creator pairs) and `Create*Shader`.
 
 **The extracted set** (`pgr4_shaders`, from `pgr4_dump_image`'s image,
 identical to a scan of the hand-patched XEX): 990 unique shaders, 364 VS and
@@ -409,6 +412,170 @@ then needs a look at the road markings.
   `default.xexp` reruns the image dump, extraction and recompile. Both
   rebuild `pgr4_shader_cache` and relink the exe.
 
+### Phase 4 findings
+
+**Method.** Shape matching against pgr3's names (`match_names.py`) gives
+1.00 only for leaf code: `D3D_AllocDevice`, `D3DDevice_Release`, the lock
+helpers, `XGGetBlockDimensions`, `D3D__FlushCachedRange` and the four XAPI
+allocators. Every function that touches the device or a resource header was
+rewritten between 2099 and 6132, so the rest were found by behaviour with
+`funcdb.py`:
+
+- **The state tables**, `{Get, Set, Default}` per entry, are in `.data` at
+  `0x82A640D0` (101 render states) and `0x82A64590` (20 sampler states);
+  `D3D__InitializeStateTables` (`sub_826DA5B0`) is their only reader. The
+  render-state enum is not 2099's: 6132 has 101 entries to 2099's 97, and
+  from `WRAP0` on pgr3's index is one higher. Index *k* is `D3DRS` value
+  *4k*, the enum UnleashedRecomp uses (10 `ZENABLE`, 14 `CULLMODE`, 50-56
+  `SCISSORTESTENABLE`..`COLORWRITEENABLE3`, 60-75 `WRAP0-15`, 76
+  `VIEWPORTENABLE`, 81 `HALFPIXELOFFSET`, 83 `PRIMITIVERESETINDEX`, 86-89 the
+  guard and discard bands, 96/97 `HIZENABLE`/`HIZWRITEENABLE`, 98
+  `LASTPIXEL`). The defaults agree, and each setter writes the register its
+  state names (`MULTISAMPLEMASK` writes `PA_SC_AA_MASK`, `LASTPIXEL`
+  `PA_SC_LINE_CNTL`, the bands `PA_CL_GB_*_ADJ`). Entries 0-9 are a getter
+  returning 0 and an empty setter. `scripts/re/state_setters.py` now pairs
+  setters by best shape instead of by index; its ratios across the two XDKs
+  (0.2-0.7) are only good for spotting which device field a store moved to.
+- **The draw-time flush**, inlined into `DrawVertices`, `DrawIndexedVertices`
+  and `BeginVertices`, writes each Xenos register group from one contiguous
+  device block, chosen by bits of the dirty masks. That maps every register
+  shadow at once (the table is in `src/gpu/d3d.h`).
+- **PM4 opcodes** each function writes (`scratch/p4/pm4_opcodes.py`): no
+  code outside D3D writes packets.
+- `.pdata` (`0x8226AB80`..) gives exact function extents.
+
+**The hook table.** Everything pgr3's renderer and tooling hook or call has a
+PGR4 address, and `config/d3d.toml` and `config/xapi.toml` name 86
+functions (81 and 5) with no codegen warnings:
+
+| pgr3 (2099) | PGR4 (6132) |
+|---|---|
+| `Direct3D_CreateDevice` | `0x826CD270`; allocates **`0x5780`** (2099: `0x5080`); type 2 makes a command-buffer device |
+| `D3DDevice_Swap` / `Present` | `0x826CB148`; the game resolves and swaps itself. `Present` (`0x826CB6E0`) exists, but only mercury calls it |
+| `Clear` (stencil `r9`) / `ClearF` | `0x826D1A08` / `0x826D18E0`, the same arguments. `ClearF` is now 73 instructions around `sub_826D1250` |
+| `Resolve` | `0x826CBEE0` |
+| `DrawVertices`, `DrawIndexedVertices`, `DrawVerticesUP` | `0x826CFF58`, `0x826D0340`, `0x826CFF10` |
+| `BeginVertices` / `EndVertices` | `0x826CFA60` / `0x826CFF00` |
+| `Create{Vertex,Pixel}Shader` | `0x826CA860` / `0x826CA710`, mercury only; the game uses `XGRegister*Shader` (Phase 1) |
+| `CreateVertexDeclaration` | `0x826CA490`, **no device argument** in 6132 |
+| `Set{Vertex,Pixel}Shader`, `SetVertexDeclaration` | `0x826CA130`, `0x826C9E30`, `0x826CA348`; `SetFVF` `0x826CA950` |
+| `Set{Vertex,Pixel}ShaderConstantF` | `0x826C9908` / `0x826C99F0`, the `...FN` cores: the game's inline wrapper computes the dirty mask and passes it in `r7` |
+| `SetPixelShaderConstantB` | `0x826C9B78` (and the VS, `I` and getter variants beside it) |
+| `Set{RenderTarget,DepthStencilSurface}` | `0x826C64B0`, `0x826C6818` |
+| `D3DResource_Destroy`, `D3DSurface_GetDesc` | `0x826CF0C8`, `0x826C8C40` |
+| `D3D__MakeSpace`, `D3D__AllocCommandMemory` | `0x826CE8C0`, `0x826CDA98` (device, dwords, align) |
+| `XPhysicalAlloc` / `XPhysicalFree` | `0x826A8B30` / `0x826A8BC0` |
+| `XInputGetState` | `0x826A8F00` |
+| `D3DQuery_Issue` / `GetData`, `CreateQuery` | `0x826D2F00` / `0x826D3188`, `0x826D3D48`; a query is a self-contained 156-byte object |
+| `BeginTiling` / `EndTiling` | `0x826D1C38` / `0x826D20D0`, one game and one mercury caller each |
+| `BeginShaderConstantF4` | **not linked**, and nothing writes `SET_CONSTANT` outside D3D |
+| `VdGlobalDevice` import | `0x82000898` (resolves to the same kernel variable as pgr3's `0x820005A0`) |
+
+**What 6132 adds** (Phase 4 step 2), and what each means for Phase 5:
+
+- **Command buffers: used, but switched off in retail.** The vehicle
+  renderer creates a second device with `Direct3D_CreateDevice(0, 2, ...)`
+  (`D3DDEVTYPE_COMMAND_BUFFER`), records each car's draws into a command
+  buffer once (`sub_82423218` begins, `sub_82423648` ends) and replays it with
+  `D3DDevice_RunCommandBuffer` (`0x826D6610`), whose draws never reach the
+  draw hooks. That happens only while the game tweakable
+  `Vehicle.DisableCommandBuffers` (value byte at `0x82AAABE4`) is 0, and its
+  default is 1, so vehicles draw through the device. The renderer should keep
+  the byte at 1 and warn if `RunCommandBuffer` is ever called.
+- **GPU-loaded constants.** `SetPixelShader`/`SetVertexShader` emit
+  `LOAD_ALU_CONSTANT` packets that load a shader's literal constants from its
+  own microcode (`sub_826DEBD8`) and clear those registers' dirty bits, so the
+  device's float-constant shadow never holds them. XenosRecomp already bakes
+  revision-0x11 float and integer literals into the HLSL, so nothing is lost.
+- **Z pass and predication.** `D3DDevice_BeginZPass`/`EndZPass` (by
+  behaviour, `0x826D2590`/`0x826D28D8`, one game caller, `sub_824CE250`) and
+  `D3DDevice_SetPredication` (`0x826D1AC8`). The draws in a Z pass still go
+  through the draw hooks once; the replay is the guest ring's, which the
+  native renderer discards.
+- **No game-written PM4**, and `BeginShaderConstantF4` is gone, so pgr3's
+  ring-written constants (`hooks/constants.cpp`) have nothing to model here.
+
+**The device and resources** (`src/gpu/d3d.h`, every offset with a static
+assert):
+
+- The header is six 64-bit dirty masks (`+0x00`..`+0x2F`), the ring pointer,
+  end and limit at `+0x30`/`+0x34`/`+0x38` and the reference count at `+0x3C`
+  (2099: ring at `+0x00`, masks from `+0x10`). The state-call tables follow
+  at `+0x40`, `+0x1D4`, `+0x224`, `+0x3B8`.
+- Fetch constants (`+0x480`), float constants (`+0x780`, `+0x1780`) and the
+  bool and loop files (`+0x2780`, `+0x27A0`) are where 2099 had them. The
+  clip planes are at `+0x2820`.
+- The register shadows are blocks in register order: `0x2000` at `+0x2880`,
+  `0x2100` at `+0x28CC`, `0x2180` at `+0x2920`, `0x2200` at `+0x2934`
+  (`RB_DEPTHCONTROL`; 2099 `+0x2D74`, so the `0x21xx`/`0x22xx` shadows moved
+  by -0x440), `0x2280` at `+0x2964`, `0x2300` at `+0x29B8`, `0x2380` at
+  `+0x2A50`. The window scissor is not on a mask: `sub_826C33C0` writes it
+  into the ring at once.
+- The bindings: index buffer `+0x308C`, render targets `+0x3090`, depth
+  `+0x30A0`, stream buffers `+0x30A4` (no offset field; it is folded into
+  vertex fetch constant 95 - stream), strides `+0x30E8`, textures `+0x30F8`,
+  viewport `+0x3160` **as floats**, scissor `+0x317C`, pixel and vertex
+  shaders `+0x318C`/`+0x3190`, declaration `+0x2E24`, blend staging
+  `+0x2E40`/`+0x2E44`, tile count `+0x31C4`, behaviour flags `+0x5708`.
+- **`D3DResource` is 24 bytes** (2099: 12): `Common` with the
+  `D3DRESOURCETYPE` in bits 0-3 (1 VB, 2 IB, 3 texture, 4 surface,
+  5 declaration, 6 VS, 7 PS, 8 constant buffer, 9 command buffer), then the
+  reference count, fence, read fence, identifier and base flush. So a
+  texture is 52 bytes with its fetch constant at `+0x1C`, a surface 48 bytes
+  (`RB_SURFACE_INFO` `+0x18`, colour/depth info `+0x1C`, size `+0x24`,
+  `D3DFORMAT` `+0x28`, EDRAM size `+0x2C`), and a vertex or index buffer 32
+  bytes with its two words at `+0x18`/`+0x1C`. Shaders and declarations are
+  resources too.
+
+**Checked live** (`scratch/p4/run1`): `pgr4_trace_frame` is ported into
+`xenos_resolve_dump.cpp` and decodes every header through `gpu/d3d.h`. A
+scripted run to the St Petersburg race (Phase 0's script, frames 2100-2102,
+`scratch/p4/trace_summary.py` and `pass_list.py`) shows:
+
+- **The headers agree.** Surfaces decode to the sizes, formats and EDRAM
+  bases the resolves imply (a 1280x720 colour surface is 3,686,400 bytes,
+  720 tiles, and its depth sits at base 720). Vertex buffers carry `Common`
+  `0x00200001`: type 1 in cached memory (bit 21, which
+  `D3DDevice_CreateIndexBuffer` sets for usage 4), without the D3D-created
+  bit, so **gotham4 builds its own buffer headers**, as gotham3 did. Their
+  `Fetch0` holds the virtual address; `SetStreamSource` writes the physical
+  one into the device. Index buffers carry `0x20200002`. Surfaces D3D made
+  carry `0x00100004` (`0x80100004` with EDRAM it allocated); the game's
+  aliases carry `0x00000004`.
+- **The two main-scene surfaces trade roles every frame.** One frame
+  `0x4098E180` is the colour target and `0x41B4D520` the depth, the next the
+  reverse; the game rewrites their headers in place (format, base, MSAA and
+  size all change). The renderer must not cache a surface's header by its
+  address.
+- **What does not run:** `D3DDevice_RunCommandBuffer` (never called), the Z
+  pass and `D3DDevice_Create{Vertex,Pixel}Shader` (not in the front end or
+  this race). The vehicle renderer does create its command-buffer device
+  (`Direct3D_CreateDevice` type 2, about 20 s after the main one): creation
+  comes before the option check.
+
+**A race frame** (St Petersburg, day, overcast; 43 resolves in each of the
+three frames. Phase 0's frame had 42, without the 256x256 second shadow):
+
+| Pass | Target | MSAA | EDRAM format | Draws | Resolves to |
+|---|---|---|---|---|---|
+| minimap | 200x200, D3D's own EDRAM (base 720) | 1x | 8888 | 8, after a clear | 200x200 `k_8_8_8_8` |
+| Perlin noise | 128x128 alias | 1x | 8888 | 1 per pass | eight resolves into one texture |
+| environment cube | 256x256, with 256x256 depth | **4x** | 7e3 | 7-54 per face | six faces of a `k_16_16_16_16_EXPAND` cube (flags `0x300`, clearing) |
+| car shadow | depth only, 512x512 | 1x | `D24FS8` | 160 | `k_24_8_FLOAT` (flags `0x4`) |
+| second shadow | depth only, 256x256 | 1x | `D24FS8` | 120 | `k_24_8_FLOAT` |
+| quarter-resolution view | 320x180, with depth, cleared to Z 0 | **4x** | 2_10_10_10 | 664 | `k_2_10_10_10_AS_16_16_16_16`, then blurred twice (1 draw each): the scene from a camera behind the car, the lower half left at the clear colour |
+| **main scene** | 1280x720 as **two predicated tiles**, 1280x480 and 1280x240 | **2x** | 7e3, `D24FS8` | about 3,330 | depth `k_24_8_FLOAT` 1280x720 (flags `0x14`); `EndTiling` resolves colour per tile to `k_16_16_16_16_FLOAT` |
+| after the scene | 1280x720 alias, 1x depth | 1x | 7e3 as 16_16_16_16 | 93 | the same FP16 scene texture |
+| luminance | 64x64, 16x16, 4x4, then 1x1 twice | 1x | FP16, then 32_FLOAT | 1 each | FP16, then `k_32_FLOAT` |
+| bloom | 320x180, 160x90, 80x45, 40x22 (three each), then 320x180 | 1x | 8888 | 1 each | `k_8_8_8_8` |
+| final | 1280x720 front buffer | 1x | 7e3 | 35 (tone map, HUD) | `k_2_10_10_10_AS_16_16_16_16` (flags `0x300`) |
+
+So against PGR3's race: **predicated tiling in every race frame** (PGR3 used
+it only outside races), 2x MSAA on the main scene and 4x on the cube and
+the quarter-resolution view, 7e3 EDRAM colour as in PGR3, float depth with
+reversed Z, and a second shadow map. MRT does not appear (render target 1 is
+only ever set to null).
+
 ---
 
 ## Approach
@@ -457,7 +624,7 @@ reference comes first.
 2. **Done:** the asset checksums are in the README table, with
    `Pgr4TitleUpdate.bin` (`2cb08fdc...`, read from `update:`). The title
    update's version is `0.0.2.1` (codegen and runtime agree).
-3. **Done, except `pgr4_trace_frame`:** `pgr4_input_script`,
+3. **Done:** `pgr4_input_script`,
    `pgr4_null_audio`, `pgr4_dump_frames` and `pgr4_dump_raw` (pgr3's endian,
    4 KiB tiled-offset and FP16 fixes kept), the abort logger,
    `core/{logging,settings,memory_helpers}` and `scripts/re/funcdb.py` and
@@ -465,11 +632,8 @@ reference comes first.
    race needs: `k_16_16_16_16_EXPAND` (as FP16), `k_2_10_10_10_AS_16_16_16_16`,
    `k_32_FLOAT` and `k_24_8_FLOAT` depth (stretched grey, range logged), and
    the destination slice (`r9`), so each cube face lands in its own file.
-   **Left:** `pgr4_trace_frame` hooks `SetRenderTarget`,
-   `SetDepthStencilSurface`, the draw calls, `Clear` and the tiling calls,
-   and reads the device's render-target, texture and stream shadows. All of
-   these are Phase 4 identifications in 6132. `Settings::Init` belongs to
-   the native renderer (Phase 5), as in pgr3.
+   `pgr4_trace_frame` came with Phase 4's names (Phase 4 findings).
+   `Settings::Init` belongs to the native renderer (Phase 5), as in pgr3.
 4. **Scripted runs to reference scenes**, in seconds from boot (pgr3 quirks
    §1). **Done:** the boot movies, title, front end and a day race (St
    Petersburg, overcast). **Left:** a garage, a night race and a **rain
@@ -560,6 +724,10 @@ pgr3's method still applies: find functions by behaviour in the codegen
 output, not by signature. Because 2099 and 6132 are far apart, the anchors
 matter more than the shape matching here.
 
+Steps 1-3 are done and step 4's header is written (Phase 4 findings). Step
+1's assumption that the state enums match did not hold: 6132's render-state
+enum is the later one.
+
 1. **Anchors:**
    - kernel imports: `VdSwap`, `VdInitializeEngines`/`VdInitializeRingBuffer`,
      `VdGlobalDevice`, `VdGetCurrentDisplayGamma`,
@@ -588,18 +756,21 @@ matter more than the shape matching here.
    - Surface creation parameters (EDRAM base, `HiZ`), predicated tiling,
      queries, and `DrawIndexedVerticesUP`.
 3. Write `config/d3d.toml` and `config/xapi.toml`, include them from
-   `pgr4_manifest.toml`, and re-run codegen with no naming warnings. (Started:
-   both exist and are included, with the 11 names Phases 0 and 1 needed.)
+   `pgr4_manifest.toml`, and re-run codegen with no naming warnings. (Done:
+   86 names.)
 4. Write `src/gpu/d3d.h` for 6132: allocation size, dirty masks, dispatch
    tables, fetch, float and bool constants, every register shadow pgr3 reads,
    viewport, scissor, clip planes, streams, textures, render targets, depth
    and shaders. Check the resource headers (`D3DResource`, VB, IB, texture,
    surface) against live data with a destroy log and a frame trace, as pgr3
-   did. Note whether gotham4 still builds its own VB/IB headers.
+   did. Note whether gotham4 still builds its own VB/IB headers. (Done
+   through the frame trace: the headers decode, and gotham4 builds its own
+   buffer headers. A destroy log is still to do, with Phase 5's lifetime
+   work.)
 5. **Trace a race frame of each kind** (day, night, rain, snow; car and bike;
    a cockpit view) with `pgr4_trace_frame`, and fill in the pass table:
    targets, sizes, MSAA counts, formats, EDRAM bases, MRT, depth resolves and
-   rect lists.
+   rect lists. (Day done; the rest need scripts that reach those races.)
 
 **Exit:** a PGR4 equivalent of pgr3's hook table (pgr3 plan, Phase 4
 findings), every address named, `gpu/d3d.h` rewritten for 6132, and the pass
@@ -634,9 +805,12 @@ table filled in.
      use predicated tiling, larger targets or picture-in-picture corners
      (pgr3 quirks §3);
    - whatever render setup 6132 and gotham4 use (pgr3 used 1024x600, 2x,
-     7e3). Known from Phase 0's resolves: 1280x720, an FP16 scene, an FP32
-     adaptation value, a 10-bit front buffer and reversed-Z depth. The MSAA
-     count waits for Phase 4's trace.
+     7e3). Known from Phases 0 and 4: 1280x720, 2x MSAA in 7e3 drawn as two
+     **predicated tiles** in every race frame (so `BeginTiling`/`EndTiling`
+     have to be modelled from the start, unlike in pgr3), 4x MSAA for the
+     environment cube and a quarter-resolution view, an FP16 scene, an FP32
+     adaptation value, a 10-bit front buffer and reversed-Z float depth. The
+     main scene's colour and depth surfaces trade headers every frame.
 5. Keep pgr3's `WARN_FIRST` warnings for paths the renderer does not model,
    and model a path only when a warning shows PGR4 reaching it.
 6. Lifetime: hook `D3DResource_Destroy` and `XPhysicalAlloc`/`XPhysicalFree`,
@@ -672,12 +846,18 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 1. **XDK 6132 is far from 2099.** In pgr3, about 60 of rr6's 77 names matched
    at ratio 1.00. Expect far fewer here. Phase 4 depends on anchors and the
    state-setter tables more than on name matching, and it is the phase most
-   likely to overrun.
+   likely to overrun. **Settled in Phase 4:** only leaf code matched at 1.00,
+   and the rest was found by behaviour in one pass.
 2. **State that bypasses the register shadows.** Constant buffers, GPU-owned
    constants or command buffers would each need their own model, as
    `BeginShaderConstantF4` did in pgr3. Command buffers could force the
    renderer to parse PM4 packets for part of the frame. Find out in Phase 4
-   step 2 before committing to Phase 5's order.
+   step 2 before committing to Phase 5's order. **Settled in Phase 4:** the
+   vehicle renderer's command buffers are off unless
+   `Vehicle.DisableCommandBuffers` is cleared (its default is 1), the shader
+   literals that `LOAD_ALU_CONSTANT` loads are baked in by XenosRecomp, and
+   nothing else writes packets. The renderer should pin the option at 1 and
+   warn on `RunCommandBuffer`.
 3. **Shader scale.** 990 shaders against 309 in PGR3 means three times the
    recompile, prelink and cache work, and more chances of a new instruction
    pattern. **Settled in Phases 2 and 3:** all 990 compile, the recompile

@@ -1,43 +1,127 @@
 # XDK 2.0.6132.4 Direct3D, as statically linked into PGR4's default.xex (with
 # title update 0.0.2.1 applied, which is what codegen and the runtime load).
 #
-# Only what the Phase 0 tooling hooks is named so far, found from the kernel
-# imports and the game's frame end with scripts/re/funcdb.py. Phase 4 names
-# the rest.
+# Found by behaviour in the codegen output with scripts/re/funcdb.py, from the
+# kernel imports, the {Get, Set, Default} state tables, the PM4 packets each
+# function writes and the device fields it touches. Shape matching against
+# pgr3's 2099 names (scripts/re/match_names.py) gives 1.00 only for leaf code
+# (D3D_AllocDevice, D3DDevice_Release, the lock helpers, XG utilities); every
+# function that touches the device or a resource header was rewritten between
+# 2099 and 6132. Names marked "by behaviour" fit what the code does but have
+# no anchor beyond that. docs/native-renderer-plan.md, Phase 4 findings, has
+# the method and the open items.
 #
-# 6132 still reaches the display without D3DDevice_Present on the game's
-# path: the frame end, sub_822B3B08, calls D3DDevice_Resolve (flags 0x300,
-# the front buffer texture at g+20 as destination) and then D3DDevice_Swap
-# itself, as PGR3's does. It then blocks on the previous frame's fence and
-# inserts a new one. Swap has three other callers (sub_826CB6E0,
-# sub_826E0E10 and sub_8286DDF8), all in .text, outside the BINK section.
+# The game's frame end, sub_822B3B08, resolves the front buffer (flags 0x300)
+# and calls D3DDevice_Swap itself, as PGR3's does, then blocks on the previous
+# frame's fence and inserts a new one. D3DDevice_Present exists, but only
+# mercury (the engine core, sub_828697B8) calls it.
 #
-# D3DDevice layout seen so far (6132 differs from 2099):
-#   +0x3090           render targets (Resolve indexes dev + (3108 + i) * 4;
-#                     2099: +0x30F8)
-#   +0x30A0           depth-stencil surface (Resolve's i == 4)
-#   +0x2A90           pointer to the GPU's fence read-back (IsFencePending)
-#   +0x2A9C           next fence (InsertFence, IsFencePending)
-#   +0x2AB0           last inserted fence
-# D3DBaseTexture: the fetch constant is at +0x1C (2099: +0x10); Resolve reads
-# the destination's pitch at +0x1C, base and format at +0x20, size at +0x24.
-
-# Shader creation is the XG way, not D3DDevice_Create*Shader (not linked):
-# the game's sub_822B34A0 (VS) and sub_822B35F0 (PS) split the container with
-# XGGetMicrocodeShaderParts, allocate the header and physical memory
-# themselves, fill the header with XGSet*ShaderHeader, copy the microcode and
-# call XGRegister*Shader with its physical address. sub_8286F7B0 (VS) and
-# sub_8286F9F0 (PS) do the same for another subsystem. Every container passes
-# through XGGetMicrocodeShaderParts.
+# Shaders: the game creates them the XG way (sub_822B34A0 VS, sub_822B35F0
+# PS: XGGetMicrocodeShaderParts, its own allocation, XGSet*ShaderHeader,
+# XGRegister*Shader). mercury's loaders (sub_8286F7B0 VS, sub_8286F9F0 PS)
+# take that path too unless bit 2 of their flags is set, in which case they
+# call D3DDevice_Create{Vertex,Pixel}Shader, which do not go through
+# XGGetMicrocodeShaderParts. A census or renderer has to hook both.
+#
+# Command buffers: Direct3D_CreateDevice with type 2 (D3DDEVTYPE_COMMAND_BUFFER)
+# makes a recording device. The vehicle renderer (sub_82423218 begins,
+# sub_82423648 ends and runs) records each car's draws once into a command
+# buffer and replays it with D3DDevice_RunCommandBuffer, unless the game
+# tweakable Vehicle.DisableCommandBuffers (value byte at 0x82AAABE4) is set,
+# when it draws immediately. Its default is 1, so retail draws immediately.
+#
+# Not named: the D3DTexture/D3DSurface UnlockRect and LockRect thunks and the
+# GetSurfaceLevel/GetCubeMapSurface/GetVolumeLevel family (one-line tail calls
+# that match several thunks), sub_826C6100 (the float viewport SetViewport
+# converts to), sub_826C8F30 (FVF to declaration, used by SetFVF), and the
+# command-buffer calls between create and run (sub_826D5D20, sub_826D6198,
+# sub_826D6468, sub_826D5C88).
+#
+# D3DResource is 24 bytes in 6132 (2099: 12): Common (+0, the D3DRESOURCETYPE
+# in bits 0-3), ReferenceCount (+4), Fence (+8), ReadFence (+12), Identifier
+# (+16), BaseFlush (+20). Shaders, declarations, constant and command buffers
+# are resources too. The device and resource layouts are in src/gpu/d3d.h.
 
 [functions]
+0x826C59D8 = { name = "D3DDevice_SetScissorRect" } # (dev, RECT*): +0x317C, clipped to the viewport at +0x3160
+0x826C5B28 = { name = "D3DDevice_SetStreamSource" } # (dev, stream, vb, offset, stride, mask): vertex fetch constant 95 - stream, vb at +0x30A4, stride/4 at +0x30E8
+0x826C5CD0 = { name = "D3DDevice_SetIndices" } # (dev, ib): +0x308C
+0x826C5DA0 = { name = "D3DDevice_GetRenderTarget" } # (dev, index) -> AddRef'd surface
+0x826C5FB8 = { name = "D3DDevice_SetClipPlane" } # (dev, index, float[4]): +0x2820 + 16i
+0x826C6378 = { name = "D3DDevice_SetViewport" } # (dev, D3DVIEWPORT9*): converts to floats for sub_826C6100
+0x826C64B0 = { name = "D3DDevice_SetRenderTarget" } # (dev, index, surface): +0x3090 + 4i; surface +0x1C into RB_COLOR{,1-3}_INFO
+0x826C6818 = { name = "D3DDevice_SetDepthStencilSurface" } # (dev, surface): +0x30A0
+0x826C6BC0 = { name = "XGGetBlockDimensions" }
+0x826C7E18 = { name = "D3D__LockRect" }
+0x826C7EA8 = { name = "D3D__LockBox" }
+0x826C89F8 = { name = "D3DDevice_CreateTexture" } # 52-byte header: resource, MipFlush, fetch constant at +0x1C
+0x826C8B18 = { name = "D3DDevice_CreateSurface" } # 48-byte header; EDRAM from sub_826D7588
+0x826C8C40 = { name = "D3DSurface_GetDesc" } # type 4; format +0x28, size +0x24, MSAA from +0x18
+0x826C8CD8 = { name = "D3DSurface_LockRect" } # tail-calls D3D__LockRect on the parent level
+0x826C8CF8 = { name = "D3DVolume_GetDesc" } # type 16
+0x826C8D60 = { name = "D3DDevice_SetTexture" } # (dev, sampler, texture): +0x30F8 + 4s; fetch constant s at +0x480 + 24s
+0x826C9908 = { name = "D3DDevice_SetVertexShaderConstantFN" } # (dev, start, float4*, count, mask): +0x780; the game's inline wrapper computes the dirty mask (+0x00)
+0x826C99F0 = { name = "D3DDevice_SetPixelShaderConstantFN" } # (dev, start, float4*, count, mask): +0x1780; dirty mask +0x08
+0x826C9AD8 = { name = "D3DDevice_GetVertexShaderConstantF" }
+0x826C9AF8 = { name = "D3DDevice_GetPixelShaderConstantF" }
+0x826C9B18 = { name = "D3DDevice_SetVertexShaderConstantB" } # (dev, start, BOOL*, count): bits of the file at +0x2780
+0x826C9B78 = { name = "D3DDevice_SetPixelShaderConstantB" } # (dev, start, BOOL*, count): bit start+128 of +0x2780
+0x826C9BD8 = { name = "D3DDevice_GetVertexShaderConstantB" }
+0x826C9C20 = { name = "D3DDevice_GetPixelShaderConstantB" }
+0x826C9C68 = { name = "D3DDevice_SetVertexShaderConstantI" } # (dev, start, int4*, count): loop constants at +0x27A0
+0x826C9CC0 = { name = "D3DDevice_SetPixelShaderConstantI" } # loop constants at +0x27E0
+0x826C9D18 = { name = "D3DDevice_GetVertexShaderConstantI" }
+0x826C9D60 = { name = "D3DDevice_GetPixelShaderConstantI" }
 0x826C9DA8 = { name = "XGGetMicrocodeShaderParts" } # (container, XGMICROCODESHADERPARTS*): cached part, size (+872 VS, +40 PS), physical part, size
 0x826C9DF8 = { name = "XGRegisterPixelShader" } # (header, physical microcode)
+0x826C9E30 = { name = "D3DDevice_SetPixelShader" } # (dev, shader): +0x318C; copies the shader's fetch constants, clears its literal constants' dirty bits
 0x826CA038 = { name = "XGRegisterVertexShader" } # (header, physical microcode); type 6, refcount 1, microcode at +32
+0x826CA130 = { name = "D3DDevice_SetVertexShader" } # (dev, shader): +0x3190
+0x826CA348 = { name = "D3DDevice_SetVertexDeclaration" } # (dev, decl): +0x2E24
+0x826CA490 = { name = "D3DDevice_CreateVertexDeclaration" } # (D3DVERTEXELEMENT9*) -> decl; 12-byte elements, no device argument
+0x826CA518 = { name = "D3DVertexDeclaration_GetDeclaration" }
+0x826CA598 = { name = "D3DDevice_SetShaderGPRAllocation" } # (dev, flags, vs, ps): INDIRECT_BUFFERs into D3D's own blocks
 0x826CA6D8 = { name = "XGSetPixelShaderHeader" } # (header, size, parts)
+0x826CA710 = { name = "D3DDevice_CreatePixelShader" } # (container) -> 40-byte header + copy; only mercury's PS loader calls it
 0x826CA820 = { name = "XGSetVertexShaderHeader" } # (header, size, parts); clears 872 bytes first
+0x826CA860 = { name = "D3DDevice_CreateVertexShader" } # (container) -> 872-byte header + copy; only mercury's VS loader calls it
+0x826CA950 = { name = "D3DDevice_SetFVF" } # (dev, fvf): +0x3088; builds a declaration at +0x2F98
 0x826CB148 = { name = "D3DDevice_Swap" } # (dev, front buffer, params); VdSwap's only caller
+0x826CB6E0 = { name = "D3DDevice_Present" } # (dev): resolve then swap; only mercury calls it
 0x826CBEE0 = { name = "D3DDevice_Resolve" } # (dev, flags, rect, dest, point, level, slice, colour, z in f1, ...)
+0x826CCE88 = { name = "D3D_AllocDevice" }
+0x826CCFB0 = { name = "D3DDevice_Release" } # reference count at +0x3C
+0x826CD270 = { name = "Direct3D_CreateDevice" } # (adapter, type, window, behaviour, params, out): 0x5780 bytes; type 2 = command-buffer device
+0x826CDA98 = { name = "D3D__AllocCommandMemory" } # (dev, dwords, align)
 0x826CE320 = { name = "D3DDevice_BlockOnFence" } # (fence) -> wait on the global device, reason 6
-0x826CE9C0 = { name = "D3DDevice_InsertFence" } # (dev) -> fence; kicks through sub_826CE8C0
+0x826CE8C0 = { name = "D3D__MakeSpace" } # (dev) -> new ring pointer (+0x30)
+0x826CE9C0 = { name = "D3DDevice_InsertFence" } # (dev) -> fence
 0x826CE9F8 = { name = "D3DDevice_IsFencePending" } # (fence)
+0x826CEA70 = { name = "D3DResource_IsBusy" } # IsFencePending on the resource's fence (+8)
+0x826CEC18 = { name = "D3DDevice_SetRingBufferParameters" } # calls VdInitializeRingBuffer
+0x826CF0C8 = { name = "D3DResource_Destroy" } # switch on Common bits 0-3 (types 1-9)
+0x826CF5F8 = { name = "D3DResource_AddRef" } # +4; a level surface also AddRefs its parent
+0x826CF670 = { name = "D3DResource_Release" } # +4; Destroy at zero
+0x826CF868 = { name = "D3DDevice_CreateIndexBuffer" } # (length, usage, format): 32-byte header; only mercury calls it
+0x826CFA60 = { name = "D3DDevice_BeginVertices" } # (dev, primitive, vertex count, stride) -> data
+0x826CFF00 = { name = "D3DDevice_EndVertices" }
+0x826CFF10 = { name = "D3DDevice_DrawVerticesUP" } # (dev, primitive, vertex count, data, stride)
+0x826CFF58 = { name = "D3DDevice_DrawVertices" } # (dev, primitive, start, count)
+0x826D0340 = { name = "D3DDevice_DrawIndexedVertices" } # (dev, primitive, base vertex, start index, count)
+0x826D18E0 = { name = "D3DDevice_ClearF" } # (dev, flags, rect, float4 colour, z in f1, stencil r8); work in sub_826D1250
+0x826D1A08 = { name = "D3DDevice_Clear" } # (dev, count, rects, flags, colour, z in f1, stencil r9)
+0x826D1AC8 = { name = "D3DDevice_SetPredication" } # by behaviour: (dev, mask), SET_BIN_MASK
+0x826D1C38 = { name = "D3DDevice_BeginTiling" } # (dev, flags, count, rects, colour, z f1, stencil r9): count at +0x31C4, rects from +0x31C8
+0x826D20D0 = { name = "D3DDevice_EndTiling" }
+0x826D2590 = { name = "D3DDevice_BeginZPass" } # by behaviour; one game caller, sub_824CE250
+0x826D28D8 = { name = "D3DDevice_EndZPass" } # by behaviour
+0x826D2D90 = { name = "D3DQuery_Release" }
+0x826D2F00 = { name = "D3DQuery_Issue" } # (query, flags): bit 1 D3DISSUE_END
+0x826D3188 = { name = "D3DQuery_GetData" } # (query, data, size, flags)
+0x826D3D48 = { name = "D3DDevice_CreateQuery" } # (dev, type, ...) -> 156-byte query; 8 event, 9 occlusion, 10
+0x826D59E8 = { name = "D3DDevice_CreateCommandBuffer" } # (size, flags): 184-byte header + buffer
+0x826D6610 = { name = "D3DDevice_RunCommandBuffer" } # (dev, command buffer, ...): flushes the state it depends on, INDIRECT_BUFFER per segment
+0x826DA5B0 = { name = "D3D__InitializeStateTables" } # reads the tables at 0x82A640D0 (101 render) and 0x82A64590 (20 sampler)
+0x826DACE8 = { name = "D3DDevice_Initialize" }
+0x826DAF48 = { name = "D3DDevice_Shutdown" } # calls VdShutdownEngines
+0x826DFD48 = { name = "D3D__FlushCachedRange" }
