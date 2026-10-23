@@ -20,7 +20,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 1. Shader extraction | **Exit met; coverage runs still to do.** Every build dumps the patched image (`pgr4_dump_image`) and extracts **990** shaders (`pgr4_shaders`): 980 from the byte scan and 10 built on the stack, 888 of them named. The runtime census (`pgr4_shader_census`, hooking `XGGetMicrocodeShaderParts`) matched all 970 containers a front-end-and-race run created, byte for byte, with none missing. The 23 not yet created are identified. Phase 4 found a second creation path, `D3DDevice_Create*Shader`, which the census now hooks too; the front end and a race do not reach it. Night, rain, snow, bike and burnout runs still create 967 of 990, so the 23 are not weather or tyre-smoke shaders. See Phase 1 findings. |
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
-| 4. D3D identification (XDK 6132) | **Exit met for a day race; other race kinds still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow and bike races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and nothing adds a pass. Left: a cockpit view (no pad button changed the camera) and a day race in rain or fog. See Phase 4 findings. |
+| 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **Not started.** |
 | 6. Hardening and performance | **Not started.** |
 
@@ -591,16 +591,23 @@ with the census on:
 | night, heavy rain | 28 | as clear night, and **no bloom chain** (13 resolves fewer). The rain adds no target or resolve: it is drawn inside the existing passes |
 | night, snow | 28 | the same as heavy rain |
 | night, clear, **Ducati Monster S4RS** | 41 | the same as the clear night car race |
+| night, clear, **in-car view** | 36 | no environment cube; a rear-view mirror pass (below) |
 
-Every kind keeps the two-tile 2x MSAA main scene, the 4x environment cube
-and the 4x quarter-resolution view, and none reaches `RunCommandBuffer`, the
-Z pass or `Create*Shader`. Weather and bikes therefore add no render target,
-format or pass to model; they only switch passes off.
+Every kind keeps the two-tile 2x MSAA main scene and the 4x
+quarter-resolution view, every outside view the 4x environment cube, and
+none reaches `RunCommandBuffer`, the Z pass or `Create*Shader`. Weather and
+bikes therefore add no render target, format or pass to model; they only
+switch passes off.
 
-Two things are still open. **No cockpit view:** none of the pad's buttons
-(`Y`, `Back`, `X`, `B`, `LB`, `RB`, `LS`, `RS`, the D-pad) changed the camera
-in a Custom Match race (`up` and `left` change the music track), so the
-lobby's "Cameras" option is probably locking it. **Day weather:** Tokyo is
+**The in-car view** is `LB` twice, at least 4 s after the race starts (a
+single press, or one earlier, does nothing; `up` and `left` change the
+music track). Its frame has 36 resolves: the environment cube is gone, and
+a **rear-view mirror** pass is added. The mirror draws 368 draws into the
+main scene's own 2x MSAA surfaces, before and outside the tiling, and is
+resolved as a 424x96 rectangle into an FP16 texture: a partial resolve
+from the shared EDRAM targets, which the renderer has to support.
+
+One thing is still open. **Day weather:** Tokyo is
 night only, so a day race in rain or fog needs another city. London is on
 the grid (`CITY="up up left"`) and has day weather (Clear, Overcast, Light
 Rain along its top row), but its menus drop presses while their previews
@@ -803,8 +810,8 @@ enum is the later one.
 5. **Trace a race frame of each kind** (day, night, rain, snow; car and bike;
    a cockpit view) with `pgr4_trace_frame`, and fill in the pass table:
    targets, sizes, MSAA counts, formats, EDRAM bases, MRT, depth resolves and
-   rect lists. (Done for day, night, rain, snow and a bike; a cockpit view
-   and a day race in rain or fog are still to reach.)
+   rect lists. (Done for day, night, rain, snow, a bike and the in-car
+   view; a day race in rain or fog is still to reach.)
 
 **Exit:** a PGR4 equivalent of pgr3's hook table (pgr3 plan, Phase 4
 findings), every address named, `gpu/d3d.h` rewritten for 6132, and the pass

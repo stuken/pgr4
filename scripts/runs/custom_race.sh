@@ -6,7 +6,8 @@
 # heavy rain, cloudy; row 2: snow, fog, heavy fog, storm; row 3: icy, showers),
 # e.g. "right right" for heavy rain. Vehicle keys move from the default car in
 # the class B list (e.g. "up" for the Monster S4RS bike); empty keeps the Enzo.
-# [extra script] is appended to the pad script (e.g. "y@190s"); DUMPS overrides
+# [extra script] is appended to the pad script; "lb@160s,lb@166s" switches to
+# the in-car view (LB twice, at least 4 s after the race starts). DUMPS overrides
 # the dumped present frames (default: the menu pages, every 50 from 1100).
 # CITY moves on the city grid from Tokyo (bottom right of three rows of three),
 # e.g. CITY="up up left"; it adds about 16 s of menus, about 180 presents.
@@ -21,7 +22,9 @@
 # profile an earlier run created in <build>/user (the first boot adds ~40 s of
 # profile screens) and on the timings measured in Phase 4: the race starts
 # near present 1950 (about 2150 with a vehicle change) and the car is
-# burning out against a wall by 2700, which is where to trace.
+# burning out against a wall by 2700, which is where to trace. The menus
+# sometimes drop a press anyway (a run then ends in Arcade Mode or Advanced
+# Options), so check sheet.png and rerun when the menu pages went astray.
 set -e
 slack=${SLACK:-0}
 name=$1; wkeys=$2; vkeys=$3; trace=$4; tmo=${5:-330}; extra=$6
