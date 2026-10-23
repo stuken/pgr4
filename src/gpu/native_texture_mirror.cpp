@@ -187,7 +187,12 @@ void UntileFace(const MirrorLayout &L, const u8 *face_src, u8 *out, int off_x,
   }
 }
 
-// pgr4: linear (untiled) mip 0. Rows sit fetch.pitch * 32 texels apart.
+// pgr4: linear (untiled) mip 0. Rows sit fetch.pitch * 32 texels apart. A
+// texture with packed mips small enough to keep its base level in the mip
+// tail has it at the tail's offset (pack_off_x/y, in blocks), linear or tiled.
+// D3D's LockRect hands out that address: the game writes PGR4's 8x6 car damage
+// control mesh 16 texels (0x40 bytes) past the base, where the base itself
+// holds zeros, which dented every car.
 void CopyLinearFace(const MirrorLayout &L,
                     const xe::xe_gpu_texture_fetch_t &fetch, const u8 *src,
                     u8 *out) {
@@ -196,6 +201,7 @@ void CopyLinearFace(const MirrorLayout &L,
   const size_t src_row_bytes =
       size_t(pitch_texels / L.texels_per_edge) * L.bytes_per_block;
   const size_t row_bytes = size_t(L.block_w) * L.bytes_per_block;
+  src += size_t(L.pack_off_y) * src_row_bytes + size_t(L.pack_off_x) * L.bytes_per_block;
   for (u32 by = 0; by < L.block_h; ++by) {
     tc::CopySwapBlock(L.endian, out + size_t(by) * L.staging_row_bytes,
                       src + size_t(by) * src_row_bytes, row_bytes);
@@ -850,8 +856,10 @@ GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]) 
       const MirrorLayout L = MakeLayout(fetch);
       const u32 pitch_texels =
           fetch.pitch ? u32(fetch.pitch) << 5 : rex::align(L.width, 32u);
+      // From the base through the rows CopyLinearFace reads, packed-mip
+      // offset included.
       const size_t bytes = size_t(pitch_texels / std::max(1u, L.texels_per_edge)) *
-                           L.bytes_per_block * L.block_h;
+                           L.bytes_per_block * (L.block_h + u32(L.pack_off_y));
       const u32 base = fetch.base_address << 12;
       const auto *src = pgr4::mem::try_at<const u8>(base);
       if (src && bytes && pgr4::mem::try_at<const u8>(base + u32(bytes) - 1)) {

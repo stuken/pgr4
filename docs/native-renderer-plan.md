@@ -648,7 +648,13 @@ these changes. Each was found by comparing a native frame with xenos.
   palette). XenosRecomp gave them the pixel samplers' descriptor slots, so
   the cars were displaced by the pixel shader's textures into spikes. PGR4's
   vertex shaders now read their indices from `SharedConstants` bytes
-  736-799, and the host binds slots 16-19 there.
+  736-799, and the host binds slots 16-19 there. The control mesh is an 8x6
+  k_8_8_8_8 linear texture with packed mips, which the game fills through
+  LockRect with 0x7F (no displacement) per lattice node. Packed mips put its
+  base level in the mip tail, 16 texels (0x40 bytes) past the fetch base,
+  where LockRect points; the base itself holds zeros. The mirror applied the
+  packed-mip offset to tiled textures only, so it read zeros, a -0.5
+  displacement that dented every car. Linear textures now take it too.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
