@@ -142,7 +142,8 @@ plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
   }
 }
 
-// Pixel samplers 0..15: device.textures[s] pairs with fetch constant s.
+// Pixel samplers 0..15 and vertex samplers 0..3 (slots 16..19):
+// device.textures[s] pairs with fetch constant s.
 // Most draws bind what the draw before them did in most slots. A slot whose
 // texture, fetch constant, frame and mirror generation all match the last
 // draw's still holds the right binding, so it skips the lookup and the bind.
@@ -151,17 +152,17 @@ void BindGuestTextures(const D3DDevice &dev) {
     u32 va = 0;
     u32 fetch[6] = {};
   };
-  thread_local Slot t_last[16];
+  thread_local Slot t_last[pgr4::gpu::kHostSamplerSlots];
   thread_local u64 t_generation = 0, t_frame = ~0ull;
   const u64 generation = pgr4::gpu::TextureMirrorGeneration();
   const u64 frame = pgr4::gpu::GuestMirrorFrame();
   const bool same_epoch = generation == t_generation && frame == t_frame;
   t_generation = generation;
   t_frame = frame;
-  pgr4::gpu::GuestTexture *textures[16] = {};
+  pgr4::gpu::GuestTexture *textures[pgr4::gpu::kHostSamplerSlots] = {};
   u32 resolved = 0, unresolved = 0;
   bool any = false;
-  for (u32 i = 0; i < 16; ++i) {
+  for (u32 i = 0; i < pgr4::gpu::kHostSamplerSlots; ++i) {
     const u32 tex_va = dev.textures[i];
     if (!tex_va)
       continue;
@@ -240,7 +241,7 @@ void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {
     return gs && gs->shaderCacheEntry ? gs->shaderCacheEntry->hash : 0;
   };
   std::string tex;
-  for (u32 i = 0; i < 16; ++i) {
+  for (u32 i = 0; i < pgr4::gpu::kSamplerCount; ++i) {
     const u32 va = dev.textures[i];
     if (!va)
       continue;

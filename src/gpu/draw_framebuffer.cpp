@@ -83,7 +83,7 @@ namespace {
 
 void TransitionResolveSources(VideoState &s, const GuestTexture *rt,
                               const GuestTexture *ds) {
-  plume::RenderTextureBarrier sampled[16];
+  plume::RenderTextureBarrier sampled[std::size(decltype(s.textures){})];
   u32 sampled_count = 0;
   for (GuestTexture *t : s.textures) {
     GuestTexture *src = t ? t->sourceSurface : nullptr;

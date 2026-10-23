@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the menus match xenos, and the race scene renders with predicated tiling and the motion blur. Next: the player car's mesh is garbled, and the Bink movies are black. See Phase 5 findings. |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the menus match xenos, and the race scene renders with predicated tiling, the motion blur and damage-deformed cars. Next: the Bink movies are black. See Phase 5 findings. |
 | 6. Hardening and performance | **Not started.** |
 
 ## What we know about PGR4
@@ -639,6 +639,16 @@ these changes. Each was found by comparing a native frame with xenos.
   glass, shadows, rain and particles piled up on it. That was the smearing
   in the menus, and the "huge cars" and black course in races. The
   expansion now keeps the guest's winding.
+- **Vertex textures.** The car and bike shaders' damage variants (for example
+  `vsCarPaint7` against the undamaged `vsCarPaint6`) displace each vertex by
+  a crumple map, a control mesh and a scale map sampled in the vertex shader
+  (`g_CrumpleMap`, `g_ControlMeshTex`, `g_ScaleMap` on samplers 0-2), and
+  the palette variants read `g_VertexColourPalette` on sampler 3. Vertex
+  sampler n is the device's sampler slot 16+n (slot 19 holds the 1x267
+  palette). XenosRecomp gave them the pixel samplers' descriptor slots, so
+  the cars were displaced by the pixel shader's textures into spikes. PGR4's
+  vertex shaders now read their indices from `SharedConstants` bytes
+  736-799, and the host binds slots 16-19 there.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,

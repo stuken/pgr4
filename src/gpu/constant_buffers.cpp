@@ -85,7 +85,7 @@ struct UploadState {
   u32 cursor = 0;
   SharedConstants shared{};
   SharedConstants lastUploaded{};
-  SamplerSlotCache samplerSlots[16];
+  SamplerSlotCache samplerSlots[pgr4::gpu::kHostSamplerSlots];
   float shadowPcfScale = 1.0f;
   float nudgeX = 0.0f; // SetHostPixelNudge, in host pixels
   float nudgeY = 0.0f;
@@ -348,11 +348,22 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
   // sampling.
   auto &vs = pgr4::gpu::state();
   const auto *device_p = pgr4::mem::at<const D3DDevice>(device_guest);
-  for (u32 i = 0; i < 16; ++i) {
-    s.shared.samplerIndices[i] = 0;
-    s.shared.texture2DIndices[i] = pgr4::gpu::kNullTexture2DDescriptorIndex;
-    s.shared.texture3DIndices[i] = pgr4::gpu::kNullTexture3DDescriptorIndex;
-    s.shared.textureCubeIndices[i] = pgr4::gpu::kNullTextureCubeDescriptorIndex;
+  for (u32 i = 0; i < pgr4::gpu::kHostSamplerSlots; ++i) {
+    // Slots from 16 are the vertex samplers, with indices of their own.
+    const bool vertex = i >= pgr4::gpu::kPixelSamplerSlots;
+    const u32 k = vertex ? i - pgr4::gpu::kPixelSamplerSlots : i;
+    u32 &sampler_index =
+        vertex ? s.shared.vertexSamplerIndices[k] : s.shared.samplerIndices[k];
+    u32 &texture2d_index =
+        vertex ? s.shared.vertexTexture2DIndices[k] : s.shared.texture2DIndices[k];
+    u32 &texture3d_index =
+        vertex ? s.shared.vertexTexture3DIndices[k] : s.shared.texture3DIndices[k];
+    u32 &texture_cube_index = vertex ? s.shared.vertexTextureCubeIndices[k]
+                                     : s.shared.textureCubeIndices[k];
+    sampler_index = 0;
+    texture2d_index = pgr4::gpu::kNullTexture2DDescriptorIndex;
+    texture3d_index = pgr4::gpu::kNullTexture3DDescriptorIndex;
+    texture_cube_index = pgr4::gpu::kNullTextureCubeDescriptorIndex;
 
     pgr4::gpu::GuestTexture *tex =
         vs.sample_overrides[i] ? vs.sample_overrides[i]
@@ -360,21 +371,21 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
     if (tex && tex->descriptorIndex != pgr4::gpu::kInvalidDescriptorIndex) {
       switch (tex->viewDimension) {
       case plume::RenderTextureViewDimension::TEXTURE_3D:
-        s.shared.texture3DIndices[i] = tex->descriptorIndex;
+        texture3d_index = tex->descriptorIndex;
         // X360: a 2D fetch on a 3D resource reads slice 0, so publish the
         // volume as its slice-0 2D view too so tfetch2D samples the base layer.
         if (tex->companion2D && tex->companion2D->descriptorIndex !=
                                     pgr4::gpu::kInvalidDescriptorIndex) {
-          s.shared.texture2DIndices[i] = tex->companion2D->descriptorIndex;
+          texture2d_index = tex->companion2D->descriptorIndex;
         }
         break;
       case plume::RenderTextureViewDimension::TEXTURE_CUBE:
-        s.shared.textureCubeIndices[i] = tex->descriptorIndex;
+        texture_cube_index = tex->descriptorIndex;
         break;
       case plume::RenderTextureViewDimension::TEXTURE_2D:
       case plume::RenderTextureViewDimension::UNKNOWN:
       default:
-        s.shared.texture2DIndices[i] = tex->descriptorIndex;
+        texture2d_index = tex->descriptorIndex;
         break;
       }
 
@@ -388,7 +399,7 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
         auto &sc = s.samplerSlots[i];
         if (sc.valid && sc.clamp3d == clamp3d && sc.aniso == aniso_now &&
             std::memcmp(sc.fc, &fc_be, sizeof(sc.fc)) == 0) {
-          s.shared.samplerIndices[i] = sc.sampler;
+          sampler_index = sc.sampler;
         } else {
           const u32 fc[6] = {
               u32(fc_be.dword[0]), u32(fc_be.dword[1]), u32(fc_be.dword[2]),
@@ -408,7 +419,7 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
           sc.aniso = aniso_now;
           sc.clamp3d = clamp3d;
           sc.valid = true;
-          s.shared.samplerIndices[i] = resolved;
+          sampler_index = resolved;
         }
       }
     }

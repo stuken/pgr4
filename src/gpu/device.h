@@ -32,6 +32,12 @@ class Window;
 
 namespace pgr4::gpu {
 
+// Texture slots the host binds: the pixel samplers 0-15, then the vertex
+// samplers 0-3, which are the device's sampler slots 16-19 (PGR4's car and
+// bike damage and vertex colour palettes).
+constexpr u32 kPixelSamplerSlots = 16;
+constexpr u32 kHostSamplerSlots = kPixelSamplerSlots + 4;
+
 class Video {
 public:
   template <typename T>
@@ -118,7 +124,7 @@ public:
   };
   static void SetVertexStreams(const VertexStream (&streams)[16]);
   // The texture slots whose entry is non-null, under one lock.
-  static void SetTextures(GuestTexture *const (&textures)[16]);
+  static void SetTextures(GuestTexture *const (&textures)[kHostSamplerSlots]);
 
   // BeginCommandList force-dirties every stream slot, so a view left naming a
   // retired buffer would re-bind through it. Takes s.mutex.
@@ -469,11 +475,11 @@ struct VideoState {
 
   GuestTexture *fullscreen_chain_head = nullptr;
 
-  GuestTexture *textures[16] = {};
+  GuestTexture *textures[kHostSamplerSlots] = {};
   // Per slot, for the draw being recorded: a filtered copy of textures[i] to
   // sample instead (at the target's scale, or FXAA'd), or null to sample the
   // texture itself.
-  GuestTexture *sample_overrides[16] = {};
+  GuestTexture *sample_overrides[kHostSamplerSlots] = {};
   GuestShader *vertex_shader = nullptr;
   GuestShader *pixel_shader = nullptr;
   GuestVertexDeclaration *vertex_declaration = nullptr;

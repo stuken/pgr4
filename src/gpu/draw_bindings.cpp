@@ -67,7 +67,7 @@ void SetVertexStreamLocked(VideoState &s, u32 slot,
 } // namespace
 
 void Video::SetTexture(u32 index, GuestTexture *texture) {
-  if (index >= 16)
+  if (index >= kHostSamplerSlots)
     return;
   // A null SetTexture is not an unbind on Xenos: it clears a bookkeeping
   // pointer and leaves the fetch constant alone, so the slot keeps its last
@@ -79,10 +79,10 @@ void Video::SetTexture(u32 index, GuestTexture *texture) {
   SetTextureLocked(s, index, texture);
 }
 
-void Video::SetTextures(GuestTexture *const (&textures)[16]) {
+void Video::SetTextures(GuestTexture *const (&textures)[kHostSamplerSlots]) {
   auto &s = state();
   std::lock_guard lock(s.mutex);
-  for (u32 i = 0; i < 16; ++i)
+  for (u32 i = 0; i < kHostSamplerSlots; ++i)
     if (textures[i])
       SetTextureLocked(s, i, textures[i]);
 }

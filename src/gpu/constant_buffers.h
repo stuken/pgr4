@@ -93,8 +93,16 @@ struct SharedConstants {
   u32 pulledStreamStrides[4]{}; // c32, byte 512
   u64 pulledStreamAddresses[4]{}; // c33..c34, byte 528
   u32 pulledInputs[PULL_MAX_LOCATIONS][2]{}; // c35..c45, byte 560
+  // The vertex samplers' descriptor indices (the device's sampler slots
+  // 16-19), apart from the pixel samplers' so that both stages' shaders can
+  // use samplers 0-3 (XenosRecomp VERTEX_SAMPLER_INDICES_OFFSET).
+  u32 vertexTexture2DIndices[4]{};   // c46, byte 736
+  u32 vertexTexture3DIndices[4]{};   // c47, byte 752
+  u32 vertexTextureCubeIndices[4]{}; // c48, byte 768
+  u32 vertexSamplerIndices[4]{};     // c49, byte 784
 };
-static_assert(sizeof(SharedConstants) == 736);
+static_assert(sizeof(SharedConstants) == 800);
+static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 736);
 
 // memory stays valid until ResetFrame().
 struct ConstantAllocation {
