@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **Not started.** |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the menus match xenos, and the race scene renders with predicated tiling and the motion blur. Next: the player car's mesh is garbled, and the Bink movies are black. See Phase 5 findings. |
 | 6. Hardening and performance | **Not started.** |
 
 ## What we know about PGR4
@@ -613,6 +613,44 @@ the grid (`CITY="up up left"`) and has day weather (Clear, Overcast, Light
 Rain along its top row), but its menus drop presses while their previews
 load, and three timed runs each lost a different press. A day weather race
 needs a script that waits on what the screen shows, or one manual run.
+
+### Phase 5 findings
+
+The port is pgr3's renderer with PGR4's names, its 6132 device layout and
+these changes. Each was found by comparing a native frame with xenos.
+
+- **Device reset.** After `CreateDevice`, the game calls `D3DDevice_Reset`
+  (`sub_826CD008`), which reallocates the ring through
+  `SetRingBufferParameters` and then waits on a GPU that never reads it. The
+  native device ignores both.
+- **Declarations.** `BLENDINDICES` comes as `INT1` (`0x2C83A1`), which maps to
+  `R32_UINT`.
+- **Predicated tiling.** The guest surfaces bound at `BeginTiling` are one
+  tile's size (1280x480). The host binds surfaces of the tiles' extent
+  (1280x720) in their place until `EndTiling`. It also sets the device's
+  tiling fields (`tilingFlags` 0x20, the tiled targets, the extent at
+  +0x3374) so that `sub_826C6100` clamps viewports to the extent, as it does
+  while the guest tiles. `EndTiling` is one resolve of the whole surface.
+- **Rect list winding.** Full-screen passes are rect lists, and Xenos culls
+  them like any triangle. The motion blur composite (`ps_821AE5A0`, the first
+  draw of the after-scene pass) draws a clockwise triple under
+  `D3DCULL_CCW`. The host's rect expansion reversed the winding, so the
+  composite was culled. Its target was then never redrawn, and each frame's
+  glass, shadows, rain and particles piled up on it. That was the smearing
+  in the menus, and the "huge cars" and black course in races. The
+  expansion now keeps the guest's winding.
+- **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
+  scene depth (`g_vDepthScale`, c158), reprojects it with the previous
+  frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
+  only where the scene's alpha is 1. So the host clears the 7e3 scene's
+  alpha to 1 at `BeginTiling`, as the resolve's clear already did.
+
+`pgr4_dump_resolve_sources` (with `pgr4_dump_frames`) writes each resolve's
+source as the resolve found it, as `pgr4_frame_N_sK_<dest>.bmp`. It shows
+which pass first goes wrong. `pgr4_trace_frame` now prints every non-zero
+PS constant of a traced `DrawUP`, and the xenos trace prints the PS
+constants from c150 for `BeginVertices` and the VS constants from c200 for
+`Draw`.
 
 ---
 

@@ -35,6 +35,7 @@
 #include "gpu/constant_buffers.h"
 #include "gpu/d3d.h"
 #include "gpu/format.h"
+#include "gpu/frame_dump.h"
 #include "gpu/device.h"
 #include "gpu/guest_buffers.h"
 #include "gpu/native_texture_mirror.h"
@@ -64,12 +65,14 @@ REXCVAR_DEFINE_STRING(pgr4_debug_skip_vs, "", kCvarGroup,
                       "(hex, as pgr4_trace_frame prints it) is in this comma list");
 
 REX_EXTERN(__imp__D3DDevice_BeginVertices);
+REX_EXTERN(__imp__D3DDevice_SetViewport);
 REX_EXTERN(__imp__D3DDevice_EndVertices);
 REX_EXTERN(__imp__D3DDevice_DrawVerticesUP);
 
 namespace pgr4::gpu {
 u32 PresentCount();
 u32 BoundRenderTargetVa();
+void SetTiledExtent(PPCContext &ctx, u8 *base, u32 device_va, u32 width, u32 height);
 }
 
 namespace {
@@ -306,9 +309,12 @@ void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {
 // The PS constants of a full-screen pass, where post grading and filter taps
 // live.
 void TracePixelConstants(const D3DDevice &dev) {
+  // Every non-zero constant.
   std::string consts;
-  for (u32 c : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 32u, 33u, 34u}) {
+  for (u32 c = 0; c < 256; ++c) {
     const auto &v = dev.psFloatConstants[c];
+    if (!float(v[0]) && !float(v[1]) && !float(v[2]) && !float(v[3]))
+      continue;
     consts += std::format(" c{}=({:.6g},{:.6g},{:.6g},{:.6g})", c, float(v[0]),
                           float(v[1]), float(v[2]), float(v[3]));
   }
@@ -756,6 +762,10 @@ namespace {
 // vertex shaders of PGR3's full-screen passes. A dword the three vertices
 // share (a colour) is copied, not summed. position_offset is the byte offset
 // of the screen-space x, y floats.
+// The quad winds as the guest's triple does, since Xenos culls a rect list
+// like any triangle: PGR4's motion blur composite draws a clockwise triple
+// under D3DCULL_CCW. Wound the other way, the host culled it, and the
+// after-scene pass piled up frame over frame on the target it never redrew.
 bool ExpandRectList(u32 data, u32 vertex_count, u32 stride,
                     u32 position_offset, std::vector<u32> &out) {
   const u32 rects = vertex_count / 3;
@@ -798,10 +808,12 @@ bool ExpandRectList(u32 data, u32 vertex_count, u32 stride,
         const float f = as_float(va) + as_float(vb) - as_float(vc);
         std::memcpy(&fourth, &f, sizeof(fourth));
       }
-      o[d] = va;
-      o[dwords + d] = vc;
-      o[2 * dwords + d] = vb;
-      o[3 * dwords + d] = fourth;
+      // corner, a, fourth, b: (corner, a, b) is a rotation of the guest's
+      // (v0, v1, v2), and both triangles of the quad wind as it does.
+      o[d] = vc;
+      o[dwords + d] = va;
+      o[2 * dwords + d] = fourth;
+      o[3 * dwords + d] = vb;
     }
   }
   return true;
@@ -977,6 +989,24 @@ void FillGuestTexture(u32 texture, u32 value) {
                   texture, pitch, height, base, value);
 }
 
+// A 7e3 surface's alpha comes back as 1. D3D packs the clear's alpha as
+// given (PGR3's frame-end resolve clears to 0,0,0,0), but on Xenos the
+// scene's EDRAM is then shared: the shadow and environment passes put
+// their depth and colour at bases 0 and 224, inside the scene colour's
+// tiles, and D24FS8 depth near 1.0 has the top two bits that 7e3 reads as
+// alpha. xenia's EDRAM-exact path (render_target_path_d3d12=rov) resolves
+// the scene with alpha 1 at every pixel. The host does not alias EDRAM,
+// so every host clear of a 7e3 target (the resolve's and BeginTiling's)
+// clears alpha to that. The scene's opaque geometry masks alpha off and
+// keeps it, and the motion blur blurs only where alpha is 1 (PGR3's
+// ps_8200F068, PGR4's ps_821AE5A0).
+u32 SceneClearColor(const pgr4::gpu::GuestTexture *target, u32 color) {
+  if (target && target->guestFormat ==
+                    static_cast<u32>(pgr4::gpu::D3DFormat::kA2B10G10R10FEdram))
+    color |= 0xFF000000u;
+  return color;
+}
+
 struct ResolveArgs {
   u32 flags;
   u32 rect_va;
@@ -1057,6 +1087,8 @@ void ResolveNative(const ResolveArgs &a) {
     if (!fill.empty())
       FillGuestTexture(dest, u32(std::stoul(fill, nullptr, 16)));
   }
+  if (dest && src)
+    pgr4::gpu::SnapshotForFrameDump(src, std::format("{:08X}", dest));
   if (dest && src && src->texture) {
     const plume::RenderFormat format =
         depth ? plume::RenderFormat::R32_FLOAT
@@ -1089,19 +1121,7 @@ void ResolveNative(const ResolveArgs &a) {
     clear_flags |= pgr4::gpu::kClearTarget;
     if (const auto *c = pgr4::mem::at<const be_f32>(clear_color_va))
       color = FloatColorToArgb(c);
-    // A 7e3 surface's alpha comes back as 1. D3D packs the clear's alpha as
-    // given (PGR3's frame-end resolve clears to 0,0,0,0), but on Xenos the
-    // scene's EDRAM is then shared: the shadow and environment passes put
-    // their depth and colour at bases 0 and 224, inside the scene colour's
-    // tiles, and D24FS8 depth near 1.0 has the top two bits that 7e3 reads as
-    // alpha. xenia's EDRAM-exact path (render_target_path_d3d12=rov) resolves
-    // the scene with alpha 1 at every pixel. The host does not alias EDRAM,
-    // so it clears alpha to that. The scene's opaque geometry masks alpha
-    // off and keeps it, and the motion blur (ps_8200F068) blurs only where
-    // alpha is 1.
-    if (src && src->guestFormat ==
-                   static_cast<u32>(pgr4::gpu::D3DFormat::kA2B10G10R10FEdram))
-      color |= 0xFF000000u;
+    color = SceneClearColor(src, color);
   }
   if (flags & kResolveClearDepthStencil)
     clear_flags |= pgr4::gpu::kClearZBuffer | pgr4::gpu::kClearStencil;
@@ -1128,27 +1148,65 @@ REX_HOOK_RAW(D3DDevice_Resolve) {
   ctx.r3.u64 = 0;
 }
 
-// Predicated tiling (XDK 2099; RR6 never tiles, PGR3 does in its front end).
-// The guest's BeginTiling/EndTiling replay the command buffer per tile and
-// resolve each one, through ring code the native device does not set up. The
-// host has no EDRAM limit, so the draws between them already render the whole
-// surface once: BeginTiling reduces to the first tile's clear, EndTiling to
-// one whole-surface resolve. The device's tile count stays 0, so the rest of
-// D3D behaves untiled.
+// Predicated tiling. PGR4 tiles every race frame: two tiles, 1280x480 and
+// 1280x240, of a 1280x720 2x MSAA scene. The guest's BeginTiling/EndTiling
+// replay the command buffer per tile and resolve each one, through ring code
+// the native device does not set up. The host has no EDRAM limit, so the
+// draws between them render the whole extent once, into host surfaces of the
+// extent's size bound in place of the tile-sized guest ones
+// (pgr4::gpu::SetTiledExtent). BeginTiling reduces to that, the first tile's
+// clear, and the device fields that make sub_826C6100 clamp viewports to the
+// extent rather than to the bound surface; EndTiling to one whole-surface
+// resolve. The tile count stays 0, so the rest of D3D behaves untiled.
 //
 // (device, flags, tile count, tile rects, clear color, ClearZ in f1, stencil
 // in r9). Flags bit 0 skips the clear; otherwise the guest clears all four
 // colour targets, depth and stencil (ClearF flags 0x3F).
 REX_HOOK_RAW(D3DDevice_BeginTiling) {
-  (void)base;
+  const u32 device_va = ctx.r3.u32;
+  auto *dev = pgr4::mem::at<pgr4::gpu::D3DDevice>(device_va);
+  // D3DRECT {x1,y1,x2,y2}; the extent is the largest x2 and y2, as the guest
+  // stores it.
+  u32 width = 0, height = 0;
+  if (const auto *r = pgr4::mem::at<const be_u32>(ctx.r6.u32); r && ctx.r6.u32)
+    for (u32 i = 0; i < ctx.r5.u32; ++i) {
+      width = std::max(width, u32(r[i * 4 + 2]));
+      height = std::max(height, u32(r[i * 4 + 3]));
+    }
   if (TracingThisFrame())
-    PGR4_INFO("[trace] BeginTiling flags=0x{:X} tiles={} lr=0x{:08X}", ctx.r4.u32,
-              ctx.r5.u32, u32(ctx.lr));
+    PGR4_INFO("[trace] BeginTiling flags=0x{:X} tiles={} extent={}x{} lr=0x{:08X}",
+              ctx.r4.u32, ctx.r5.u32, width, height, u32(ctx.lr));
+  if (!dev || !width || !height)
+    return;
+  dev->tileExtentWidth = width;
+  dev->tileExtentHeight = height;
+  for (u32 i = 0; i < 4; ++i)
+    dev->tiledRenderTargets[i] = u32(dev->renderTargets[i]);
+  dev->tiledDepthStencil = u32(dev->depthStencil);
+  dev->tilingFlags = dev->tilingFlags | 0x20u;
+  pgr4::gpu::SetTiledExtent(ctx, base, device_va, width, height);
   if (!(ctx.r4.u32 & 1)) {
     u32 color = 0;
     if (const auto *c = pgr4::mem::at<const be_f32>(ctx.r7.u32); c && ctx.r7.u32)
       color = FloatColorToArgb(c);
+    color = SceneClearColor(pgr4::gpu::state().render_target, color);
     Video::Clear(pgr4::gpu::kClearAll, color, static_cast<float>(ctx.f1.f64), ctx.r9.u32);
+  }
+  // The guest ends on a full viewport, which now clamps to the extent:
+  // D3DVIEWPORT9 {X, Y, Width, Height, MinZ, MaxZ} on an isolated frame.
+  rex::CallFrame frame(ctx);
+  const u32 vp_va = (ctx.r1.u32 - 0x100) & ~0xFu;
+  if (auto *vp = pgr4::mem::at<be_u32>(vp_va)) {
+    vp[0] = 0;
+    vp[1] = 0;
+    vp[2] = width;
+    vp[3] = height;
+    reinterpret_cast<be_f32 *>(vp)[4] = 0.0f;
+    reinterpret_cast<be_f32 *>(vp)[5] = 1.0f;
+    frame.ctx.r1.u64 = vp_va - 0x80;
+    frame.ctx.r3.u64 = device_va;
+    frame.ctx.r4.u64 = vp_va;
+    __imp__D3DDevice_SetViewport(frame.ctx, base);
   }
 }
 
@@ -1156,13 +1214,13 @@ REX_HOOK_RAW(D3DDevice_BeginTiling) {
 // f1, stencil in r9, parameters). With no destination the guest resolves
 // nothing.
 REX_HOOK_RAW(D3DDevice_EndTiling) {
-  (void)base;
+  const u32 device_va = ctx.r3.u32;
   if (TracingThisFrame())
     PGR4_INFO("[trace] EndTiling flags=0x{:X} dest=0x{:08X} lr=0x{:08X}", ctx.r4.u32,
               ctx.r6.u32, u32(ctx.lr));
-  if (!ctx.r6.u32)
-    return;
-  ResolveNative({.flags = ctx.r4.u32,
+  // Resolve from the tiled surfaces, then put the untiled ones back.
+  if (ctx.r6.u32)
+    ResolveNative({.flags = ctx.r4.u32,
                  .rect_va = 0,
                  .dest = ctx.r6.u32,
                  .point_va = 0,
@@ -1173,6 +1231,12 @@ REX_HOOK_RAW(D3DDevice_EndTiling) {
                  .clear_stencil = ctx.r9.u32,
                  .sp = ctx.r1.u32,
                  .lr = u32(ctx.lr)});
+  if (auto *dev = pgr4::mem::at<pgr4::gpu::D3DDevice>(device_va);
+      dev && (dev->tilingFlags & 0x20u)) {
+    // Bit 0 too: SetRenderTarget recomputes it for the next bind.
+    dev->tilingFlags = dev->tilingFlags & ~0x21u;
+    pgr4::gpu::SetTiledExtent(ctx, base, device_va, 0, 0);
+  }
 }
 
 REX_HOOK(D3DDevice_DrawVertices, D3DDevice_DrawVertices_hook);

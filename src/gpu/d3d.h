@@ -384,7 +384,11 @@ struct D3DDevice {
   be_u32 currentFence;        // +0x2A9C  InsertFence returns it; unbinding stamps it into resources
   u8 pad_2AA0[0x2AB0 - 0x2AA0];
   be_u32 lastInsertedFence;   // +0x2AB0
-  u8 pad_2AB4[0x2E24 - 0x2AB4];
+  u8 pad_2AB4[0x2ABC - 0x2AB4];
+  // Bit 0x20: tiling (BeginTiling sets it, EndTiling clears it); bit 0x10 a
+  // tiled Z pass. Bit 0 is SetRenderTarget's "the tiled targets are bound".
+  u8 tilingFlags;             // +0x2ABC
+  u8 pad_2ABD[0x2E24 - 0x2ABD];
   be_u32 vertexDeclaration;   // +0x2E24  D3DDevice_SetVertexDeclaration (2099: +0x2C90)
   u8 pad_2E28[0x2E40 - 0x2E28];
   // Blend as set through D3DRS (SRCBLEND..BLENDOPALPHA), applied to the four
@@ -406,12 +410,20 @@ struct D3DDevice {
   D3DRect scissorRect;        // +0x317C  D3DDevice_SetScissorRect
   be_u32 pixelShader;         // +0x318C  D3DDevice_SetPixelShader
   be_u32 vertexShader;        // +0x3190  D3DDevice_SetVertexShader (2099: +0x4FD8)
-  u8 pad_3194[0x31C4 - 0x3194];
+  u8 pad_3194[0x31B0 - 0x3194];
   // Predicated tiling. D3DDevice_BeginTiling stores the tile count here and
-  // copies its D3DRECTs from +0x31C8; the render targets and depth it was
-  // given are kept at +0x31B0..+0x31C0 for ClearF and SetViewport to compare.
+  // copies its D3DRECTs from +0x31C8; the render targets and depth bound at
+  // BeginTiling are kept for ClearF and SetViewport to compare.
+  be_u32 tiledRenderTargets[4]; // +0x31B0
+  be_u32 tiledDepthStencil;   // +0x31C0
   be_u32 tileCount;           // +0x31C4
-  u8 pad_31C8[0x5708 - 0x31C8];
+  u8 pad_31C8[0x3374 - 0x31C8];
+  // The tiles' extent (largest x2, y2): while tilingFlags 0x20 is set and the
+  // tiled targets are bound, sub_826C6100 clamps viewports to it instead of
+  // to the render target.
+  be_u32 tileExtentWidth;     // +0x3374
+  be_u32 tileExtentHeight;    // +0x3378
+  u8 pad_337C[0x5708 - 0x337C];
   be_u32 behaviorFlags;       // +0x5708  Direct3D_CreateDevice (2099: +0x5050)
   u8 pad_570C[0x5780 - 0x570C];
 };
@@ -464,7 +476,10 @@ static_assert(offsetof(D3DDevice, viewport) == 0x3160);
 static_assert(offsetof(D3DDevice, scissorRect) == 0x317C);
 static_assert(offsetof(D3DDevice, pixelShader) == 0x318C);
 static_assert(offsetof(D3DDevice, vertexShader) == 0x3190);
+static_assert(offsetof(D3DDevice, tilingFlags) == 0x2ABC);
+static_assert(offsetof(D3DDevice, tiledRenderTargets) == 0x31B0);
 static_assert(offsetof(D3DDevice, tileCount) == 0x31C4);
+static_assert(offsetof(D3DDevice, tileExtentWidth) == 0x3374);
 static_assert(offsetof(D3DDevice, behaviorFlags) == 0x5708);
 
 // Head of the device's query-slot pool (D3DDevice_CreateQuery takes result

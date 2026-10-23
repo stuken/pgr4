@@ -51,6 +51,7 @@ namespace pgr4::gpu {
 void NoteDefaultSurfaces(u32 back_buffer, u32 depth);
 bool ForgetGuestSurface(u32 surface_va);
 bool TraceFrameActive();
+void SetTiledExtent(PPCContext &ctx, u8 *base, u32 device_va, u32 width, u32 height);
 }
 
 namespace {
@@ -72,6 +73,9 @@ std::unordered_map<u32, std::vector<SurfaceEntry>> g_surfaces;
 std::unordered_map<u32, GuestVertexDeclaration *> g_decls;
 u32 g_default_back_buffer = 0;
 std::atomic<u32> g_bound_render_target{0};
+// Between BeginTiling and EndTiling, the tiles' extent (width << 32 | height):
+// the guest surfaces are one tile's size, the host ones the whole extent.
+std::atomic<u64> g_tiled_extent{0};
 
 using SurfaceDesc = pgr4::gpu::D3DSurfaceDesc;
 
@@ -151,7 +155,10 @@ GuestTexture *HostSurface(PPCContext &ctx, u8 *base, u32 surface) {
     return nullptr;
   if (surface == g_default_back_buffer)
     return pgr4::gpu::state().back_buffer_surface;
-  const u64 placement = Placement(surface);
+  const u64 extent = g_tiled_extent.load(std::memory_order_relaxed);
+  // A tiled surface is a host surface of its own, apart from its untiled one.
+  const u64 placement =
+      extent ? Placement(surface) ^ (extent * 0xC2B2AE3D27D4EB4Full + 1) : Placement(surface);
   {
     std::lock_guard lock(g_mutex);
     if (GuestTexture *host = FindSurfaceLocked(surface, placement))
@@ -160,6 +167,10 @@ GuestTexture *HostSurface(PPCContext &ctx, u8 *base, u32 surface) {
   SurfaceDesc desc{};
   if (!GuestSurfaceDesc(ctx, base, surface, desc))
     return nullptr;
+  if (extent) {
+    desc.Width = std::max(u32(desc.Width), u32(extent >> 32));
+    desc.Height = std::max(u32(desc.Height), u32(extent));
+  }
   // The host surface is the guest size times its scale.
   u32 scale =
       pgr4::gpu::Output::SurfaceScale(u32(desc.Width), u32(desc.Height));
@@ -283,6 +294,9 @@ void GrowDepthToCoverTarget() {
   pgr4::gpu::Video::ResizeTexture(ds, w, h);
   s.draw_framebuffer_bound = false;
 }
+
+void BindRenderTarget(PPCContext &ctx, u8 *base, u32 device_va, u32 surface_va);
+void BindDepthStencil(PPCContext &ctx, u8 *base, u32 surface_va);
 } // namespace
 
 // (device, index, surface)
@@ -313,6 +327,40 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
                      index, surface_va);
     return;
   }
+  BindRenderTarget(ctx, base, device_va, surface_va);
+}
+
+// (device, surface)
+REX_HOOK_RAW(D3DDevice_SetDepthStencilSurface) {
+  const u32 surface_va = ctx.r4.u32;
+  __imp__D3DDevice_SetDepthStencilSurface(ctx, base);
+  BindDepthStencil(ctx, base, surface_va);
+}
+
+namespace pgr4::gpu {
+// Predicated tiling (gpu/hooks/draw.cpp): a non-zero extent rebinds the bound
+// colour target and depth at that size, zero rebinds them at their own.
+void SetTiledExtent(PPCContext &ctx, u8 *base, u32 device_va, u32 width, u32 height) {
+  const auto *dev = pgr4::mem::at<const D3DDevice>(device_va);
+  if (!device_va || !dev)
+    return;
+  const bool tiling = width && height;
+  g_tiled_extent.store(tiling ? u64(width) << 32 | height : 0,
+                       std::memory_order_relaxed);
+  // The larger of the pair binds second, so GrowDepthToCoverTarget never
+  // sees a tiled target over an untiled depth.
+  if (tiling) {
+    BindDepthStencil(ctx, base, dev->depthStencil);
+    BindRenderTarget(ctx, base, device_va, dev->renderTargets[0]);
+  } else {
+    BindRenderTarget(ctx, base, device_va, dev->renderTargets[0]);
+    BindDepthStencil(ctx, base, dev->depthStencil);
+  }
+}
+} // namespace pgr4::gpu
+
+namespace {
+void BindRenderTarget(PPCContext &ctx, u8 *base, u32 device_va, u32 surface_va) {
   g_bound_render_target.store(surface_va, std::memory_order_relaxed);
   GuestTexture *surface = HostSurface(ctx, base, surface_va);
   if (pgr4::gpu::TraceFrameActive()) {
@@ -342,11 +390,7 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
   GrowDepthToCoverTarget();
 }
 
-// (device, surface)
-REX_HOOK_RAW(D3DDevice_SetDepthStencilSurface) {
-  const u32 device_va = ctx.r3.u32;
-  const u32 surface_va = ctx.r4.u32;
-  __imp__D3DDevice_SetDepthStencilSurface(ctx, base);
+void BindDepthStencil(PPCContext &ctx, u8 *base, u32 surface_va) {
   GuestTexture *surface = HostSurface(ctx, base, surface_va);
   if (pgr4::gpu::TraceFrameActive()) {
     // Words 6-8 carry RB_SURFACE_INFO, the EDRAM base and the HiZ info
@@ -375,9 +419,9 @@ REX_HOOK_RAW(D3DDevice_SetDepthStencilSurface) {
   // No viewport reset: on Xenos D3D binding a depth surface leaves the
   // viewport the render target set (RR6's race depth was smaller than its
   // 1440x800 colour target).
-  (void)device_va;
   GrowDepthToCoverTarget();
 }
+} // namespace
 
 // (pVertexElements) -> D3DVertexDeclaration*
 REX_HOOK_RAW(D3DDevice_CreateVertexDeclaration) {

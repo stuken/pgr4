@@ -22,12 +22,18 @@
 #include "core/logging.h"
 #include "core/settings.h"
 #include "gpu/device.h"
+#include "gpu/format.h"
+#include "gpu/frame.h"
 #include "gpu/native_texture_mirror.h"
 #include "gpu/resources.h"
 
 REXCVAR_DEFINE_STRING(pgr4_dump_frames, "", kCvarGroup,
                       "Comma-separated present frame numbers to write as "
                       "pgr4_frame_N.bmp in the user data folder");
+REXCVAR_DEFINE_BOOL(pgr4_dump_resolve_sources, false, kCvarGroup,
+                    "In the pgr4_dump_frames frames, also write each resolve's "
+                    "source surface as the resolve found it "
+                    "(pgr4_frame_N_sK_<dest>.bmp)");
 
 namespace pgr4::gpu {
 
@@ -179,10 +185,20 @@ bool DumpTexture(VideoState &s, GuestTexture *rt,
   return WriteBmp(path, width, height, bgra);
 }
 
-} // namespace
+// Presents so far.
+u32 g_presented = 0;
 
-void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
-  static u32 s_frame = 0;
+// pgr4_dump_resolve_sources: copies of resolve sources in the frame being
+// dumped, in resolve order. The textures are kept for the next dumped frame
+// rather than freed: the host caches framebuffers by texture pointer.
+struct Snapshot {
+  std::string name;
+  GuestTexture *texture;
+};
+std::vector<Snapshot> g_snapshots;
+std::vector<std::unique_ptr<GuestTexture>> g_snapshot_pool;
+
+const std::vector<u32> &WantedFrames() {
   static std::vector<u32> s_wanted = [] {
     std::vector<u32> frames;
     const std::string text = REXCVAR_GET(pgr4_dump_frames);
@@ -197,10 +213,76 @@ void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
     }
     return frames;
   }();
-  ++s_frame;
-  if (std::find(s_wanted.begin(), s_wanted.end(), s_frame) == s_wanted.end())
+  return s_wanted;
+}
+
+bool FrameWanted(u32 frame) {
+  const auto &wanted = WantedFrames();
+  return std::find(wanted.begin(), wanted.end(), frame) != wanted.end();
+}
+
+} // namespace
+
+void SnapshotForFrameDump(GuestTexture *src, const std::string &name) {
+  if (!REXCVAR_GET(pgr4_dump_resolve_sources) || !src || !src->texture)
     return;
-  const u32 wanted = s_frame;
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  if (!s.ready || !FrameWanted(g_presented + 1))
+    return;
+  // Depth copies to R32_FLOAT, as a depth resolve does.
+  const plume::RenderFormat format =
+      IsDepthFormat(src->format) ? plume::RenderFormat::R32_FLOAT : src->format;
+  // A pooled texture of this size and format that this frame has not used.
+  for (auto &pooled : g_snapshot_pool) {
+    GuestTexture *t = pooled.get();
+    if (t->width != src->width || t->height != src->height || t->format != format ||
+        std::any_of(g_snapshots.begin(), g_snapshots.end(),
+                    [&](const Snapshot &snap) { return snap.texture == t; }))
+      continue;
+    if (CopySurfaceToTextureLocked(s, src, t, "dump snapshot"))
+      g_snapshots.push_back({name, t});
+    return;
+  }
+  auto tex = std::make_unique<GuestTexture>(ResourceType::Texture);
+  plume::RenderTextureDesc desc;
+  desc.dimension = plume::RenderTextureDimension::TEXTURE_2D;
+  desc.width = src->width;
+  desc.height = src->height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = format;
+  desc.flags = plume::RenderTextureFlag::RENDER_TARGET;
+  tex->textureHolder = CreateHostTexture(s.device.get(), desc, "dump-snapshot");
+  tex->texture = tex->textureHolder.get();
+  if (!tex->texture)
+    return;
+  plume::RenderTextureViewDesc view_desc;
+  view_desc.format = format;
+  view_desc.dimension = plume::RenderTextureViewDimension::TEXTURE_2D;
+  view_desc.mipLevels = 1;
+  tex->textureView = tex->texture->createTextureView(view_desc);
+  tex->width = src->width;
+  tex->height = src->height;
+  tex->depth = 1;
+  tex->format = format;
+  tex->guestFormat = src->guestFormat;
+  tex->viewDimension = plume::RenderTextureViewDimension::TEXTURE_2D;
+  tex->hostScale = src->hostScale;
+  BindTextureSRVLocked(s, tex.get());
+  GuestTexture *t = g_snapshot_pool.emplace_back(std::move(tex)).get();
+  if (CopySurfaceToTextureLocked(s, src, t, "dump snapshot"))
+    g_snapshots.push_back({name, t});
+}
+
+void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
+  ++g_presented;
+  if (!FrameWanted(g_presented)) {
+    g_snapshots.clear();
+    return;
+  }
+  const u32 wanted = g_presented;
 
   std::filesystem::path dir = rex::Runtime::instance()
                                   ? rex::Runtime::instance()->user_data_root()
@@ -218,6 +300,14 @@ void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
                                            tex->height);
     DumpTexture(s, tex, rt_path);
   });
+  for (size_t i = 0; i < g_snapshots.size(); ++i) {
+    const Snapshot &snap = g_snapshots[i];
+    DumpTexture(s, snap.texture,
+                dir / std::format("pgr4_frame_{}_s{:02}_{}_{}x{}.bmp", wanted, i,
+                                  snap.name, snap.texture->width,
+                                  snap.texture->height));
+  }
+  g_snapshots.clear();
 }
 
 } // namespace pgr4::gpu

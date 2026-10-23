@@ -386,9 +386,19 @@ REX_HOOK_RAW(D3DDevice_SetDepthStencilSurface) {
 
 // (device, primitive, start vertex, vertex count).
 REX_HOOK_RAW(D3DDevice_DrawVertices) {
-  if (Tracing())
-    TraceCall("Draw", ctx, std::format(" prim={} n={}{}", ctx.r4.u32, ctx.r6.u32,
-                                       DescribeBuffers(ctx.r3.u32)));
+  if (Tracing()) {
+    // The non-zero VS constants from c200 (the rain's matrices and scales).
+    std::string consts;
+    if (const auto *d = pgr4::mem::at<const D3DDevice>(ctx.r3.u32))
+      for (u32 c = 200; c < 256; ++c) {
+        const auto &v = d->vsFloatConstants[c];
+        if (float(v[0]) || float(v[1]) || float(v[2]) || float(v[3]))
+          consts += std::format(" c{}=({:.6g},{:.6g},{:.6g},{:.6g})", c, float(v[0]),
+                                float(v[1]), float(v[2]), float(v[3]));
+      }
+    TraceCall("Draw", ctx, std::format(" prim={} n={}{}{}", ctx.r4.u32, ctx.r6.u32,
+                                       DescribeBuffers(ctx.r3.u32), consts));
+  }
   __imp__D3DDevice_DrawVertices(ctx, base);
 }
 
@@ -415,9 +425,21 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
 
 // (device, primitive, vertex count, stride) -> vertex data.
 REX_HOOK_RAW(D3DDevice_BeginVertices) {
-  if (Tracing())
+  if (Tracing()) {
+    // The non-zero PS constants from c150 (the full-screen passes' matrices
+    // and scales).
+    std::string consts;
+    if (const auto *d = pgr4::mem::at<const D3DDevice>(ctx.r3.u32))
+      for (u32 c = 150; c < 256; ++c) {
+        const auto &v = d->psFloatConstants[c];
+        if (float(v[0]) || float(v[1]) || float(v[2]) || float(v[3]))
+          consts += std::format(" c{}=({:.6g},{:.6g},{:.6g},{:.6g})", c, float(v[0]),
+                                float(v[1]), float(v[2]), float(v[3]));
+      }
     TraceCall("BeginVertices", ctx,
-              std::format(" prim={} n={} stride={}", ctx.r4.u32, ctx.r5.u32, ctx.r6.u32));
+              std::format(" prim={} n={} stride={}{}", ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
+                          consts));
+  }
   __imp__D3DDevice_BeginVertices(ctx, base);
 }
 
