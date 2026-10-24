@@ -308,13 +308,16 @@ GuestTexture *BuildBCMirrorTextureCube(u32 width, u32 height, u32 format,
 
 GuestTexture *BuildBCMirrorTextureVolume(
     u32 width, u32 height, u32 depth, u32 format, const void *slice_data,
-    size_t slice_data_size, u32 staging_row_bytes, u32 row_width_texels) {
+    size_t slice_data_size, u32 staging_row_bytes, u32 row_width_texels,
+    const plume::RenderComponentMapping *mapping) {
   plume::RenderFormat fmt;
   if (!BCFormatFromGuestByte(format, fmt)) {
     PGR4_WARN("BuildBCMirrorTextureVolume: unsupported BC format 0x{:X}", format);
     return nullptr;
   }
   BCMirrorDesc d{};
+  if (mapping)
+    d.mapping = *mapping;
   d.resource_type = ResourceType::VolumeTexture;
   d.tex_dim = plume::RenderTextureDimension::TEXTURE_3D;
   d.view_dim = plume::RenderTextureViewDimension::TEXTURE_3D;

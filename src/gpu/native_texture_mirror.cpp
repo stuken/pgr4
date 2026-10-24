@@ -208,6 +208,40 @@ void CopyLinearFace(const MirrorLayout &L,
   }
 }
 
+// The fetch constant's swizzle picks each output component (3 bits per
+// output: 0-3 a source component, 4 zero, 5 one), the way Xenia applies it.
+// An A8R8G8B8 texture fetched as k_8_8_8_8 carries the swizzle that restores
+// its channel order, and Xenos replicates a single-channel format into every
+// component before swizzling (k_8, DXT5A), and a two-channel one (DXN) as RGGG, where
+// host BC5 would return 0 and 1 for blue and alpha.
+plume::RenderComponentMapping FetchComponentMapping(const MirrorLayout &L,
+                                                    const xe::xe_gpu_texture_fetch_t &fetch) {
+  const bool single = L.format == xe::TextureFormat::k_8 ||
+                      L.format == xe::TextureFormat::k_16 ||
+                      L.format == xe::TextureFormat::k_DXT5A;
+  const bool dual = L.format == xe::TextureFormat::k_DXN;
+  auto pick = [&](u32 shift) {
+    const u32 sel = (u32(fetch.swizzle) >> shift) & 0x7u;
+    switch (sel) {
+    case 0:
+      return plume::RenderSwizzle::R;
+    case 1:
+      return single ? plume::RenderSwizzle::R : plume::RenderSwizzle::G;
+    case 2:
+      return single ? plume::RenderSwizzle::R
+                    : (dual ? plume::RenderSwizzle::G : plume::RenderSwizzle::B);
+    case 3:
+      return single ? plume::RenderSwizzle::R
+                    : (dual ? plume::RenderSwizzle::G : plume::RenderSwizzle::A);
+    case 4:
+      return plume::RenderSwizzle::ZERO;
+    default:
+      return plume::RenderSwizzle::ONE;
+    }
+  };
+  return plume::RenderComponentMapping(pick(0), pick(3), pick(6), pick(9));
+}
+
 // The tiled footprint pads W/H to 32 blocks and depth to 4. A linear volume
 // (PGR3's 64x64x32 k_8_8_8_8 and 256x256x4 DXT5 ones) is rows at the fetch
 // pitch, rounded up to 32 blocks, in slices of the height rounded up to 32
@@ -253,9 +287,13 @@ GuestTexture *BuildVolumeMirror(const MirrorLayout &L, const u8 *src,
     }
   }
 
+  // The fetch swizzle as for 2D textures: PGR4's 64x64x32 k_8_8_8_8 headlight
+  // cookie is fetched ZYXW and sampled for .x, and without it the road read
+  // another channel, a speckle of white across it at night.
+  const plume::RenderComponentMapping mapping = FetchComponentMapping(L, fetch);
   GuestTexture *tex = BuildBCMirrorTextureVolume(
       L.width, L.height, L.depth, u32(L.format), staging.data(), staging.size(),
-      L.staging_row_bytes, L.row_width_texels);
+      L.staging_row_bytes, L.row_width_texels, &mapping);
   if (!tex) {
     PGR4_WARN("native texture va=0x{:08X}: volume mirror build failed "
             "({}x{}x{} fmt=0x{:X})",
@@ -267,7 +305,7 @@ GuestTexture *BuildVolumeMirror(const MirrorLayout &L, const u8 *src,
   // the volume into both index tables.
   GuestTexture *slice0 = BuildBCMirrorTexture(
       L.width, L.height, u32(L.format), staging.data(), slice_size,
-      L.staging_row_bytes, L.row_width_texels);
+      L.staging_row_bytes, L.row_width_texels, &mapping);
   if (slice0) {
     tex->companion2D.reset(slice0);
   } else {
@@ -425,41 +463,8 @@ GuestTexture *Build565Mirror(const MirrorLayout &L, const u8 *src,
 GuestTexture *Build2DMirror(const MirrorLayout &L, const u8 *src,
                             const xe::xe_gpu_texture_fetch_t &fetch,
                             u32 guest_va) {
-  // The fetch constant's swizzle picks each output component (3 bits per
-  // output: 0-3 a source component, 4 zero, 5 one), the way Xenia applies it.
-  // An A8R8G8B8 texture fetched as k_8_8_8_8 carries the swizzle that restores
-  // its channel order, and Xenos replicates a single-channel format into every
-  // component before swizzling (k_8, DXT5A), and a two-channel one (DXN) as RGGG, where
-  // host BC5 would return 0 and 1 for blue and alpha.
-  plume::RenderComponentMapping mapping{};
-  const plume::RenderComponentMapping *mapping_ptr = nullptr;
-  {
-    const bool single = L.format == xe::TextureFormat::k_8 ||
-                        L.format == xe::TextureFormat::k_16 ||
-                        L.format == xe::TextureFormat::k_DXT5A;
-    const bool dual = L.format == xe::TextureFormat::k_DXN;
-    auto pick = [&](u32 shift) {
-      const u32 sel = (u32(fetch.swizzle) >> shift) & 0x7u;
-      switch (sel) {
-      case 0:
-        return plume::RenderSwizzle::R;
-      case 1:
-        return single ? plume::RenderSwizzle::R : plume::RenderSwizzle::G;
-      case 2:
-        return single ? plume::RenderSwizzle::R
-                      : (dual ? plume::RenderSwizzle::G : plume::RenderSwizzle::B);
-      case 3:
-        return single ? plume::RenderSwizzle::R
-                      : (dual ? plume::RenderSwizzle::G : plume::RenderSwizzle::A);
-      case 4:
-        return plume::RenderSwizzle::ZERO;
-      default:
-        return plume::RenderSwizzle::ONE;
-      }
-    };
-    mapping = plume::RenderComponentMapping(pick(0), pick(3), pick(6), pick(9));
-    mapping_ptr = &mapping;
-  }
+  const plume::RenderComponentMapping mapping = FetchComponentMapping(L, fetch);
+  const plume::RenderComponentMapping *mapping_ptr = &mapping;
   std::vector<u8> staging(FaceStagingSize(L), 0u);
   GuestTexture *tex = nullptr;
   if (L.format == xe::TextureFormat::k_5_6_5)

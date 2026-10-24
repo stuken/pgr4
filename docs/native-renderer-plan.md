@@ -662,6 +662,11 @@ these changes. Each was found by comparing a native frame with xenos.
   host drew them with the previous declaration and the movies stayed black.
   The SetFVF hook now builds the matching declaration (one per FVF) and binds
   it.
+- **Volume swizzle.** The night road shaders sample a 64x64x32 k_8_8_8_8
+  headlight cookie (`headlightMap`, sampler 15) as a volume, fetched ZYXW,
+  for `.x`. Volume mirrors did not take the fetch swizzle, so the road read
+  another channel and was covered in white speckle at night. Volumes now
+  take the same component mapping as 2D textures.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,

@@ -63,6 +63,8 @@ GuestTexture *BuildBCMirrorTextureVolume(u32 width, u32 height, u32 depth,
                                          u32 format, const void *slice_data,
                                          size_t slice_data_size,
                                          u32 staging_row_bytes,
-                                         u32 row_width_texels);
+                                         u32 row_width_texels,
+                                         const plume::RenderComponentMapping *mapping =
+                                             nullptr);
 
 } // namespace pgr4::gpu
