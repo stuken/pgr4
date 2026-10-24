@@ -26,7 +26,7 @@
 REXCVAR_DEFINE_INT32(pgr4_resolution_scale, 0, kCvarGroup,
                      "Integer render resolution scale over the guest's 1280x720 "
                      "(0 = from the output height, 1 = native)");
-REXCVAR_DEFINE_INT32(pgr4_shadow_scale, 2, kCvarGroup,
+REXCVAR_DEFINE_INT32(pgr4_shadow_scale, 1, kCvarGroup,
                      "Car shadow map resolution, as a multiple of the render "
                      "resolution scale (1 = the console's 512x512 and 256x256, "
                      "up to 4). Takes effect after a restart.")

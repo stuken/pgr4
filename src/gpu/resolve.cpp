@@ -852,15 +852,14 @@ void BuildGuestScaleCopiesLocked(VideoState &s) {
   }
 }
 
-// PGR3's final composite (ps_8200E300: bloom, exposure, the tone map) was the
-// last 3D pass. It drew the whole scene target, and the HUD was drawn into
-// the same target straight after. FXAA on its output, in place, anti-aliased
-// the tone-mapped scene without softening the HUD; its input is still HDR,
-// where FXAA's luma edges would be wrong. (rr6 filtered the input of RR6's
-// grading pass, which was LDR.) This is PGR3's shader hash, so pgr4_fxaa does
-// nothing until PGR4's tone-map pass (35 draws into the 1280x720 front buffer,
-// docs/native-renderer-plan.md, Phase 4) is identified (Phase 6).
-constexpr u64 kCompositePSHash = 0x1A2FBF8FB0530BB6ull;
+// PGR4's tone map (the FP16 scene in t0, the 320x180 bloom in t3) is the
+// first draw of the final pass, a
+// BeginVertices triangle over the whole 1280x720 front buffer; the HUD is
+// drawn into the same target straight after. FXAA on its output, in place,
+// anti-aliases the tone-mapped scene without softening the HUD; its input is
+// still HDR, where FXAA's luma edges would be wrong. (PGR3 hooked its own
+// composite, ps_8200E300, the same way.)
+constexpr u64 kCompositePSHash = 0xDFF1E0F0383C494Bull;
 
 void FxaaAfterCompositeLocked(VideoState &s) {
   if (!REXCVAR_GET(pgr4_fxaa))
