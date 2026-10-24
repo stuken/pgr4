@@ -35,6 +35,7 @@
 #include "gpu/constant_buffers.h"
 #include "gpu/d3d.h"
 #include "gpu/format.h"
+#include "platform/input_script.h"
 #include "gpu/frame_dump.h"
 #include "gpu/device.h"
 #include "gpu/guest_buffers.h"
@@ -227,12 +228,14 @@ u32 StreamOffset(const D3DDevice &dev, u32 stream, const D3DVertexBuffer &vb) {
   return fetch >= base ? fetch - base : 0;
 }
 
-// pgr4_trace_frame=N logs every draw of present frame N.
+// pgr4_trace_frame=N logs every draw of present frame N, as does a
+// pgr4_input_script trace@ entry for the frame it lands on.
 bool TracingThisFrame() {
   const i32 wanted = REXCVAR_GET(pgr4_trace_frame);
   const i32 count = std::max(REXCVAR_GET(pgr4_trace_frame_count), 1);
   const i64 frame = i64(pgr4::gpu::PresentCount()) + 1;
-  return wanted > 0 && frame >= wanted && frame < i64(wanted) + count;
+  return (wanted > 0 && frame >= wanted && frame < i64(wanted) + count) ||
+         pgr4::script::CaptureWanted(pgr4::script::Capture::Trace, u32(frame));
 }
 
 void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {

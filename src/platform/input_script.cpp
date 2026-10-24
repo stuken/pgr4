@@ -13,6 +13,21 @@
 // back up down left right lb rb ls rs; triggers: lt rt. Applied to user 0 on
 // top of whatever a real pad reports, and while a script is set a missing pad
 // reads as connected, since remote sessions usually have none.
+//
+// A "wait:<event>#<n>" entry waits for the event's n-th occurrence (n
+// defaults to 1). The entries after it count from that moment instead of from
+// the first poll, and the entries before it that have not started by then are
+// dropped. Load times vary from run to run, so a fixed time can land on a
+// dialog that swallows the press; this lets a script dismiss the boot screens
+// with spare presses and then walk the menus from a known point. Events:
+//   content  XContentCreateEnumerator. The first call is at boot; the second
+//            is the front end's content check, about a second before the main
+//            menu appears ("wait:content#2").
+//
+// "dump@<when>" and "trace@<when>" press nothing: they dump (as
+// pgr4_dump_frames does) or trace (as pgr4_trace_frame does) the first whole
+// frame after that moment. The frame rate varies from run to run, so a
+// capture timed in the script's own seconds lands on the scene it means to.
 
 #include <algorithm>
 #include <atomic>
@@ -26,12 +41,15 @@
 #include <rex/hook.h>
 #include <rex/types.h>
 
+#include "platform/input_script.h"
+
 #include "core/logging.h"
 #include "core/memory_helpers.h"
 #include "core/settings.h"
 
 REXCVAR_DEFINE_STRING(pgr4_input_script, "", kCvarGroup,
-                      "Scripted pad input for testing: button@frame[+hold],...");
+                      "Scripted pad input for testing: "
+                      "button@frame[+hold],...,wait:event#n,...");
 
 // Unattended runs over remote sessions can lose the audio endpoint, and the
 // guest faults at boot when audio init fails. This swaps the SDL
@@ -40,6 +58,16 @@ REXCVAR_DEFINE_BOOL(pgr4_null_audio, false, kCvarGroup,
                     "Discard audio output (testing without an audio device)");
 
 REX_EXTERN(__imp__XInputGetState);
+REX_EXTERN(__imp__XContentCreateEnumerator);
+
+namespace {
+std::atomic<u32> g_content_enumerators{0};
+}
+
+REX_HOOK_RAW(XContentCreateEnumerator) {
+  g_content_enumerators.fetch_add(1, std::memory_order_relaxed);
+  __imp__XContentCreateEnumerator(ctx, base);
+}
 
 #if defined(PGR4_NATIVE_GPU)
 namespace pgr4::gpu {
@@ -75,6 +103,24 @@ struct Press {
   double start = 0; // frames, or seconds when 'seconds'
   double hold = 6;
   bool seconds = false;
+  size_t segment = 0; // the wait it follows (Segments()), 0 for none
+  // dump@ and trace@ entries press nothing: they ask for a capture of the
+  // next whole frame (pgr4::script::CaptureWanted).
+  int capture = -1;
+};
+
+// The frames dump@ and trace@ entries asked for, by pgr4::script::Capture.
+std::mutex g_capture_mutex;
+std::vector<u32> g_capture_frames[2];
+std::atomic<bool> g_any_capture{false};
+
+// A wait entry and the entries after it. Segment 0 starts at the first poll.
+struct Segment {
+  const std::atomic<u32> *counter = nullptr;
+  u32 count = 0;
+  bool started = false;
+  double origin_seconds = 0;
+  double origin_frame = 0;
 };
 
 // XINPUT_STATE.
@@ -112,13 +158,37 @@ bool ParseButton(const std::string &name, Press &p) {
     p.right_trigger = 255;
     return true;
   }
+  if (name == "dump" || name == "trace") {
+    p.capture = int(name == "dump" ? pgr4::script::Capture::Dump
+                                   : pgr4::script::Capture::Trace);
+    return true;
+  }
   return false;
 }
 
-const std::vector<Press> &Script() {
+// "content#2" -> the counter it waits on and the count; false for an unknown
+// event.
+bool ParseWait(const std::string &spec, Segment &s) {
+  const size_t hash = spec.find('#');
+  const std::string event = spec.substr(0, hash);
+  if (event == "content")
+    s.counter = &g_content_enumerators;
+  else
+    return false;
+  s.count = hash == std::string::npos ? 1u : u32(std::stoul(spec.substr(hash + 1)));
+  return s.count > 0;
+}
+
+struct ParsedScript {
+  std::vector<Press> presses;
+  std::vector<Segment> segments{1}; // origins are set while polling
+};
+
+ParsedScript &Script() {
   static std::once_flag once;
-  static std::vector<Press> presses;
+  static ParsedScript script;
   std::call_once(once, [] {
+    auto &presses = script.presses;
     const std::string text = REXCVAR_GET(pgr4_input_script);
     size_t pos = 0;
     while (pos < text.size()) {
@@ -127,6 +197,14 @@ const std::vector<Press> &Script() {
         end = text.size();
       const std::string entry = text.substr(pos, end - pos);
       pos = end + 1;
+      if (entry.rfind("wait:", 0) == 0) {
+        Segment s;
+        if (ParseWait(entry.substr(5), s))
+          script.segments.push_back(s);
+        else
+          PGR4_WARN("pgr4_input_script: unknown wait '{}'", entry);
+        continue;
+      }
       const size_t at = entry.find('@');
       if (at == std::string::npos)
         continue;
@@ -143,22 +221,34 @@ const std::vector<Press> &Script() {
         p.hold = std::stod(entry.substr(plus + 1));
       else if (p.seconds)
         p.hold = 0.2;
+      p.segment = script.segments.size() - 1;
       presses.push_back(p);
     }
     if (!presses.empty())
-      PGR4_INFO("pgr4_input_script: {} scripted press(es)", presses.size());
+      PGR4_INFO("pgr4_input_script: {} scripted press(es), {} wait(s)",
+                presses.size(), script.segments.size() - 1);
   });
-  return presses;
+  return script;
 }
 
 } // namespace
+
+bool pgr4::script::CaptureWanted(Capture kind, u32 frame) {
+  // Asked per draw while tracing is possible: no lock until a capture exists.
+  if (!g_any_capture.load(std::memory_order_acquire))
+    return false;
+  std::lock_guard lock(g_capture_mutex);
+  const auto &frames = g_capture_frames[int(kind)];
+  return std::find(frames.begin(), frames.end(), frame) != frames.end();
+}
 
 // (user, state) -> ERROR_SUCCESS / ERROR_DEVICE_NOT_CONNECTED
 REX_HOOK_RAW(XInputGetState) {
   const u32 user = ctx.r3.u32;
   const u32 state_va = ctx.r4.u32;
   __imp__XInputGetState(ctx, base);
-  const auto &script = Script();
+  auto &parsed = Script();
+  const auto &script = parsed.presses;
   if (script.empty() || user != 0)
     return;
   auto *state = pgr4::mem::at<InputState>(state_va);
@@ -178,11 +268,61 @@ REX_HOOK_RAW(XInputGetState) {
 #else
   const double frame = g_presents.load(std::memory_order_relaxed);
 #endif
+  // A wait's segment starts at the first poll after its event, once the
+  // segment before it has started.
+  auto &segments = parsed.segments;
+  for (size_t i = 0; i < segments.size(); ++i) {
+    Segment &s = segments[i];
+    if (s.started)
+      continue;
+    if (i > 0 && (!segments[i - 1].started ||
+                  s.counter->load(std::memory_order_relaxed) < s.count))
+      break;
+    s.started = true;
+    if (i == 0)
+      continue; // frames count from boot, seconds from the first poll
+    s.origin_seconds = secs;
+    s.origin_frame = frame;
+    PGR4_INFO("pgr4_input_script: wait {} over at present {} ({:.1f} s)", i,
+                u32(frame), secs);
+  }
+  // Each press's first poll is logged with the present it landed on, so a run
+  // whose menus went astray shows which press a page swallowed.
+  static std::vector<bool> logged(script.size());
   u16 buttons = 0;
   u8 lt = 0, rt = 0;
-  for (const Press &p : script) {
+  for (size_t i = 0; i < script.size(); ++i) {
+    const Press &p = script[i];
+    const Segment &s = segments[p.segment];
+    if (!s.started)
+      continue;
     const double now = p.seconds ? secs : frame;
-    if (now >= p.start && now < p.start + p.hold) {
+    const double start =
+        p.start + (p.seconds ? s.origin_seconds : s.origin_frame);
+    // A press the next wait overtook before it began is dropped.
+    if (p.segment + 1 < segments.size() && segments[p.segment + 1].started) {
+      const Segment &next = segments[p.segment + 1];
+      if (start >= (p.seconds ? next.origin_seconds : next.origin_frame))
+        continue;
+    }
+    if (now >= start && now < start + p.hold) {
+      if (!logged[i]) {
+        logged[i] = true;
+        PGR4_INFO("pgr4_input_script: press {} at present {} ({:.1f} s)", i,
+                  u32(frame), secs);
+        if (p.capture >= 0) {
+          // The frame being built is under way; the one after is whole.
+          std::lock_guard lock(g_capture_mutex);
+          g_capture_frames[p.capture].push_back(u32(frame) + 2);
+          g_any_capture.store(true, std::memory_order_release);
+          PGR4_INFO("pgr4_input_script: {} present {}",
+                    p.capture == int(pgr4::script::Capture::Dump) ? "dump"
+                                                                  : "trace",
+                    u32(frame) + 2);
+        }
+      }
+      if (p.capture >= 0)
+        continue;
       buttons |= p.buttons;
       lt = std::max(lt, p.left_trigger);
       rt = std::max(rt, p.right_trigger);

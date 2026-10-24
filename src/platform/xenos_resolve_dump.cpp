@@ -49,6 +49,7 @@
 #include "core/memory_helpers.h"
 #include "core/settings.h"
 #include "gpu/d3d.h"
+#include "platform/input_script.h"
 
 REXCVAR_DEFINE_STRING(pgr4_dump_frames, "", kCvarGroup,
                       "Comma-separated present frame numbers whose resolve "
@@ -94,9 +95,13 @@ u32 g_resolves = 0; // resolves so far in the current present
 bool Tracing() {
   const i32 wanted = REXCVAR_GET(pgr4_trace_frame);
   // Three presents: the plugin build's frames do not always hold a whole
-  // scene render between two presents.
-  return wanted > 0 && g_frame + 1 >= static_cast<u32>(wanted) &&
-         g_frame + 1 < static_cast<u32>(wanted) + 3;
+  // scene render between two presents. A script's trace@ entry likewise.
+  const u32 frame = g_frame + 1;
+  for (u32 back = 0; back < 3 && back < frame; ++back)
+    if (pgr4::script::CaptureWanted(pgr4::script::Capture::Trace, frame - back))
+      return true;
+  return wanted > 0 && frame >= static_cast<u32>(wanted) &&
+         frame < static_cast<u32>(wanted) + 3;
 }
 
 template <typename T> const T *DeviceField(u32 dev, size_t offset) {
@@ -528,7 +533,8 @@ REX_HOOK_RAW(D3DDevice_Resolve) {
     ParseWanted();
     frame = g_frame + 1;
     seq = g_resolves++;
-    wanted = dest && std::find(g_wanted.begin(), g_wanted.end(), frame) != g_wanted.end();
+    wanted = dest && (std::find(g_wanted.begin(), g_wanted.end(), frame) != g_wanted.end() ||
+                      pgr4::script::CaptureWanted(pgr4::script::Capture::Dump, frame));
   }
   __imp__D3DDevice_Resolve(ctx, base);
   if (!wanted)

@@ -26,6 +26,7 @@
 #include "gpu/frame.h"
 #include "gpu/native_texture_mirror.h"
 #include "gpu/resources.h"
+#include "platform/input_script.h"
 
 REXCVAR_DEFINE_STRING(pgr4_dump_frames, "", kCvarGroup,
                       "Comma-separated present frame numbers to write as "
@@ -222,7 +223,8 @@ const std::vector<u32> &WantedFrames() {
 
 bool FrameWanted(u32 frame) {
   const auto &wanted = WantedFrames();
-  return std::find(wanted.begin(), wanted.end(), frame) != wanted.end();
+  return std::find(wanted.begin(), wanted.end(), frame) != wanted.end() ||
+         pgr4::script::CaptureWanted(pgr4::script::Capture::Dump, frame);
 }
 
 } // namespace

@@ -13,3 +13,4 @@
 0x826A8B30 = { name = "XPhysicalAlloc" } # a caller of MmAllocatePhysicalMemoryEx
 0x826A8BC0 = { name = "XPhysicalFree" } # MmFreePhysicalMemory
 0x826A8F00 = { name = "XInputGetState" } # (user, state) -> XamInputGetState(user, 1, state); the import's only caller
+0x826B1658 = { name = "XContentCreateEnumerator" } # a tail call to XamContentCreateEnumerator; pgr4_input_script waits on the front end's content check through it
