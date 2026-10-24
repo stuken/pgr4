@@ -785,6 +785,17 @@ palette is a 156x1 linear `k_16_16_16_16_FLOAT` texture: 52 3x4 matrices,
   coordinates in `denormTexCoord2D`/`3D`, dividing by the texture's size as
   Xenia does (PGR4_RECOMP only, not for cubes).
 
+An opponent's rider then drew as a black silhouette (`black_driver.rdc`, a
+bike on the grid at 2x). Its draws enable shadow receiving (PS boolean b8)
+with a "no shadow" matrix in c56-c59, whose w row is 0. The pixel shader
+projects by `1 / TEXCOORD5.w`, clamped to FLT_MAX as Xenos does. Scaled by
+the shadow map's size in `getWeights2D`, that overflows, and `frac(inf)` is
+NaN. The NaN weights reached the output, which the 7e3 clamp turned to
+black. The texture unit's weights are fixed point, never NaN, so
+`getWeights2D` now returns 0 for a NaN weight. Checked by replacing the
+rider's two pixel shaders (`ps_821A37A0`, `ps_821A47F8`) in the capture:
+the old helper reproduces the black, the new one draws the suit and helmet.
+
 The input script also takes `capture@<s>s`, which triggers a RenderDoc
 capture when the game runs under RenderDoc.
 
