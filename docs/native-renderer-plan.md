@@ -892,6 +892,49 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    boundaries (after `EndTiling`, say) would let the GPU start sooner. Low
    priority.
 
+**Light glows drawn through geometry (fixed: real occlusion queries).** In
+`tail_lights.rdc`, a race at 3x, about 40 additive quads with no depth test
+follow the scene resolve. They land on the player's tail lights and on cars
+behind the left barrier. They are the light glows, and they rely on
+occlusion queries to hide:
+
+- `sub_8233F890` loops over the lights (208-byte entries). For each it
+  issues a query (`D3DQuery_Issue` BEGIN 2 / END 1) around a small
+  depth-tested quad with colour writes off.
+- `sub_8233F708` reads it a frame later (`GetData`, 4 bytes). It fades the
+  light's visibility (entry +132) up while ZPass is non-zero and down while
+  it is zero.
+- The glows draw scaled by that visibility.
+
+The stub answered every query with 2^20 samples, so every glow showed.
+`gpu/occlusion.cpp` now counts the draws between BEGIN and END with host
+occlusion queries:
+
+- one host query per host draw, so no query spans a pass;
+- resolved at the end of the list and read when the slot comes round;
+- `GetData` answers S_FALSE until then, which the game already waits on.
+
+The 6132 `GetData` fills {ZPass, ZFail, StencilFail, Total}. The host counts
+only passes, so Total reads as ZPass. The one ratio reader (`sub_826A12A8`,
+1 - ZPass/Total, a per-view probe) sees all or nothing. Counts are host
+samples, so they grow with the scale squared. Both readers only compare
+against zero or against Total, so that is harmless.
+`pgr4_occlusion_queries` (on) turns the new path off. The rr6 sun counter
+(`occlusion_count_ps`, `occlusion_counting`) is still unused.
+
+D3D12 only. On Vulkan no query ever becomes available on this machine's
+driver (Radeon 8060S, Vulkan 1.4.359), not even an empty
+`vkCmdBeginQuery`/`vkCmdEndQuery` pair outside any render pass. That holds:
+
+- after the fence and after `vkDeviceWaitIdle`;
+- with a barrier after `vkCmdResetQueryPool`, and with a host
+  `vkResetQueryPool`;
+- for plume's own timestamps too (`vkGetQueryPoolResults failed with error
+  code 0x1` on stderr every frame).
+
+So `pgr4_perf_gpu` on Vulkan reports stale numbers, and the Vulkan build
+still answers every occlusion query visible. Open.
+
 ---
 
 ## Approach
@@ -1158,7 +1201,7 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 - optional extras: FXAA before the HUD, 16-bit output, anisotropy, texture
   dump and replace;
 - real occlusion queries, which pgr3 left open (it answers every query
-  visible);
+  visible): done (see Phase 6 findings, light glows);
 - Linux, as rr6 and pgr3 have it (written, not yet built).
 
 ---
