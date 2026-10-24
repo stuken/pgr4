@@ -182,6 +182,11 @@ bool BCFormatFromGuestByte(u32 guest_format, plume::RenderFormat &out) {
     // PGR3's single-channel 16-bit textures, replicated like k_8.
     out = plume::RenderFormat::R16_UNORM;
     return true;
+  case xe::TextureFormat::k_16_16_16_16_FLOAT:
+    // PGR4's bone palettes: 156x1 linear, 52 3x4 matrices the skinned
+    // models' vertex shaders fetch (MatrixPaletteSampler).
+    out = plume::RenderFormat::R16G16B16A16_FLOAT;
+    return true;
   default:
     return false;
   }

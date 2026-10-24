@@ -28,6 +28,8 @@
 // pgr4_dump_frames does) or trace (as pgr4_trace_frame does) the first whole
 // frame after that moment. The frame rate varies from run to run, so a
 // capture timed in the script's own seconds lands on the scene it means to.
+// "capture@<when>" asks RenderDoc, when the game runs under it, for a capture
+// of the next frame presented.
 
 #include <algorithm>
 #include <atomic>
@@ -37,6 +39,14 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#include <renderdoc/renderdoc_app.h>
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/types.h>
@@ -109,10 +119,36 @@ struct Press {
   int capture = -1;
 };
 
+// A capture@ entry's 'capture': no frame list, RenderDoc picks the frame.
+constexpr int kRenderDocCapture = 2;
+
 // The frames dump@ and trace@ entries asked for, by pgr4::script::Capture.
 std::mutex g_capture_mutex;
 std::vector<u32> g_capture_frames[2];
 std::atomic<bool> g_any_capture{false};
+
+// RenderDoc's in-application API when the game was launched under it.
+void TriggerRenderDocCapture() {
+#if defined(_WIN32)
+  static RENDERDOC_API_1_0_1 *api = [] {
+    RENDERDOC_API_1_0_1 *out = nullptr;
+    if (HMODULE mod = GetModuleHandleA("renderdoc.dll")) {
+      auto get = reinterpret_cast<pRENDERDOC_GetAPI>(
+          GetProcAddress(mod, "RENDERDOC_GetAPI"));
+      if (!get || !get(eRENDERDOC_API_Version_1_0_1,
+                       reinterpret_cast<void **>(&out)))
+        out = nullptr;
+    }
+    return out;
+  }();
+  if (api) {
+    api->TriggerCapture();
+    PGR4_INFO("pgr4_input_script: RenderDoc capture triggered");
+    return;
+  }
+#endif
+  PGR4_WARN("pgr4_input_script: capture@ without RenderDoc attached");
+}
 
 // A wait entry and the entries after it. Segment 0 starts at the first poll.
 struct Segment {
@@ -161,6 +197,10 @@ bool ParseButton(const std::string &name, Press &p) {
   if (name == "dump" || name == "trace") {
     p.capture = int(name == "dump" ? pgr4::script::Capture::Dump
                                    : pgr4::script::Capture::Trace);
+    return true;
+  }
+  if (name == "capture") {
+    p.capture = kRenderDocCapture;
     return true;
   }
   return false;
@@ -310,7 +350,9 @@ REX_HOOK_RAW(XInputGetState) {
         logged[i] = true;
         PGR4_INFO("pgr4_input_script: press {} at present {} ({:.1f} s)", i,
                   u32(frame), secs);
-        if (p.capture >= 0) {
+        if (p.capture == kRenderDocCapture) {
+          TriggerRenderDocCapture();
+        } else if (p.capture >= 0) {
           // The frame being built is under way; the one after is whole.
           std::lock_guard lock(g_capture_mutex);
           g_capture_frames[p.capture].push_back(u32(frame) + 2);

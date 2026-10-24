@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: the missing drivers and riders (a bug), a rain race and the rest of the exit list. See Phase 5 findings. |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: the missing light flares (a regression), a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Five more items are listed. |
 
 ## What we know about PGR4
@@ -769,28 +769,38 @@ and times every later press from there. Since then the D3D12 and Vulkan
 night races and six day races each reached the race on the first try. The
 heavy rain race has not been run with it yet.
 
+**Drivers and riders: fixed.** The cars had no drivers and the bikes no
+riders, and on the main menu the driver showed as stray geometry under the
+car. The skinned models' vertex shaders (`vsSkinnedModel_*`) skin through a
+bone palette fetched as a vertex texture, `MatrixPaletteSampler`. That
+palette is a 156x1 linear `k_16_16_16_16_FLOAT` texture: 52 3x4 matrices,
+3 texels a bone. There were two faults:
+- `GetOrCreateNativeMirror` rejected the format (the ~360 rejected
+  native textures a race logged), so the palette sampled the null texture.
+  It now mirrors as R16G16B16A16_FLOAT.
+- The fetches use unnormalized coordinates (`3 * index + 0.5 .. 2.5`, the
+  instruction's `texCoordDenorm` bit), which XenosRecomp ignored. So every
+  vertex read the clamped edge texel and the mesh collapsed to one point
+  (RenderDoc: all post-VS positions equal). The recompiler now wraps such
+  coordinates in `denormTexCoord2D`/`3D`, dividing by the texture's size as
+  Xenia does (PGR4_RECOMP only, not for cubes).
+
+The input script also takes `capture@<s>s`, which triggers a RenderDoc
+capture when the game runs under RenderDoc.
+
 **Open.**
 - A rain race (heavy rain natively, and a day race in rain), and the rest
   of the exit list below (every city by day and night, every weather,
   replays, photo mode).
 - `pgr4_fxaa` skips crash frames, whose final pass is `ps_821ADE28`
   rather than the tone map.
-- **Bug: no drivers in the cars and no riders on the bikes.** Natively
-  the cars are empty and the bikes have no riders. Not investigated yet.
-  The draws do reach the renderer: the native night, in-car and bike traces
-  (`scratch/runs/race_*_native`) record `vsSkinnedModel_NoShadow_*` draws
-  with `psSkinnedModel_NoShadow_*_Night`, 7-28 a traced frame. Those vertex
-  shaders skin through a vertex texture, `MatrixPaletteSampler` (beside
-  `g_modelWorldMatrix` and `g_worldViewProj`). The likely cause is the next
-  item: if the palette is one of those rejected textures, every bone samples
-  the null texture and the model collapses. Check first that the palette
-  mirrors and binds to its vertex slot, then compare a traced skinned draw
-  with xenos.
-- Every race logs about 360 rejected native textures: 156x1 linear
-  textures of format 0x20 (`va=0x41908324` and three others). 0x20 is
-  `k_16_16_16_16_FLOAT`, which `GetOrCreateNativeMirror` does not accept,
-  and 156 texels are 52 3x4 matrices: probably the skinned models' bone
-  palettes (above).
+- **Regression: no flares around the head and tail lights** since the
+  light glows read real occlusion queries (Phase 6 findings). The glows
+  no longer show through geometry, but the flares around the lights are
+  gone too. Not investigated yet. Check:
+  - the query quads' depth state;
+  - whether a D3D12 result wrongly reads 0;
+  - the ratio reader `sub_826A12A8`.
 
 `pgr4_dump_resolve_sources` (with `pgr4_dump_frames`) writes each resolve's
 source as the resolve found it, as `pgr4_frame_N_sK_<dest>.bmp`. It shows

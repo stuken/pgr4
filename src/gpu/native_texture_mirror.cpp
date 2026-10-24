@@ -530,12 +530,14 @@ GuestTexture *GetOrCreateNativeMirror(u32 guest_va) {
                     fetch.format == xe::TextureFormat::k_DXN ||
                     fetch.format == xe::TextureFormat::k_DXT5A);
   // Uncompressed k_8_8_8_8 and k_8 (UI, the boot screen, the movie planes),
-  // and k_16 (PGR3's 128x128 linear race textures), 2D; and k_8_8_8_8
-  // volumes (PGR3's 64x64x32 linear ones). Cubes assume DXT blocks, and
-  // k_5_6_5 is expanded by the 2D path only.
+  // k_16 (PGR3's 128x128 linear race textures) and k_16_16_16_16_FLOAT
+  // (PGR4's 156x1 bone palettes, endian k8in16), 2D; and k_8_8_8_8 volumes
+  // (PGR3's 64x64x32 linear ones). Cubes assume DXT blocks, and k_5_6_5 is
+  // expanded by the 2D path only.
   const bool rgba8 = ((fetch.format == xe::TextureFormat::k_8_8_8_8 ||
                        fetch.format == xe::TextureFormat::k_8 ||
                        fetch.format == xe::TextureFormat::k_16 ||
+                       fetch.format == xe::TextureFormat::k_16_16_16_16_FLOAT ||
                        fetch.format == xe::TextureFormat::k_5_6_5) &&
                       fetch.dimension <= xe::DataDimension::k2DOrStacked) ||
                      (fetch.format == xe::TextureFormat::k_8_8_8_8 &&
