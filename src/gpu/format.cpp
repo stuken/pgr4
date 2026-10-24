@@ -190,7 +190,6 @@ bool BCFormatFromGuestByte(u32 guest_format, plume::RenderFormat &out) {
 plume::RenderFormat ConvertGuestFormat(u32 guest_format) {
   switch (static_cast<D3DFormat>(guest_format)) {
   case D3DFormat::kA16B16G16R16F:
-  case D3DFormat::kA16B16G16R16FAlt:
     return plume::RenderFormat::R16G16B16A16_FLOAT;
   case D3DFormat::kA8B8G8R8:
   case D3DFormat::kA8R8G8B8:
@@ -201,6 +200,7 @@ plume::RenderFormat ConvertGuestFormat(u32 guest_format) {
   case D3DFormat::k2101010As16161616:
   case D3DFormat::kBare2101010As16161616:
   case D3DFormat::kA2B10G10R10FEdram:
+  case D3DFormat::kA2B10G10R10FEdramAlt:
     // X360 7e3 HDR EDRAM format. It must stay float: UNORM would clamp the
     // HDR scene the posteff chain relies on.
     return Video::SceneColorFormat();

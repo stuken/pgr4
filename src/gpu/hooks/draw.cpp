@@ -1000,10 +1000,14 @@ void FillGuestTexture(u32 texture, u32 value) {
 // so every host clear of a 7e3 target (the resolve's and BeginTiling's)
 // clears alpha to that. The scene's opaque geometry masks alpha off and
 // keeps it, and the motion blur blurs only where alpha is 1 (PGR3's
-// ps_8200F068, PGR4's ps_821AE5A0).
+// ps_8200F068, PGR4's ps_821AE5A0). PGR4's tone map writes RGB only into
+// its 7e3 final target, and the loading screen before a race blends the
+// last menu frame resolved from it (0x400CD380) by that alpha.
 u32 SceneClearColor(const pgr4::gpu::GuestTexture *target, u32 color) {
-  if (target && target->guestFormat ==
-                    static_cast<u32>(pgr4::gpu::D3DFormat::kA2B10G10R10FEdram))
+  if (target && (target->guestFormat ==
+                     static_cast<u32>(pgr4::gpu::D3DFormat::kA2B10G10R10FEdram) ||
+                 target->guestFormat ==
+                     static_cast<u32>(pgr4::gpu::D3DFormat::kA2B10G10R10FEdramAlt)))
     color |= 0xFF000000u;
   return color;
 }

@@ -687,6 +687,13 @@ these changes. Each was found by comparing a native frame with xenos.
   target only while it still describes it (the same format, or the base of
   its latest resolve), and otherwise the target whose latest resolve wrote
   the memory it points at.
+- **6132's 7e3 format word.** PGR4's 7e3 EDRAM surfaces report D3D format
+  0x1A2201BF (GPUTEXTUREFORMAT 63, as PGR3's 0x1A22ABBF), which pgr3's
+  table carried as an FP16 alternate, so the host never gave PGR4's 7e3
+  clears alpha 1. The tone map writes RGB only into the final target, and
+  the loading screen before a race blends the last menu frame resolved from
+  it (0x400CD380) by its alpha, so it showed black where xenos shows the
+  menu's car. Both words now count as 7e3.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
@@ -710,8 +717,6 @@ tries.
   need it added in the shader, per sampler slot, as Xenia does. Every such
   fetch traced so far has a bias of 0. Vulkan applies the sampler's bias to
   explicit levels, so the backends may differ until then.
-- The loading screen before a race shows a black background where xenos
-  shows static artwork.
 - A day race in rain, and the rest of the exit list below (every city by
   day and night, every weather, replays, photo mode).
 

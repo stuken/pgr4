@@ -20,7 +20,6 @@ namespace pgr4::gpu {
 // same format.
 enum class D3DFormat : u32 {
   kA16B16G16R16F = 0x1A22AB60,
-  kA16B16G16R16FAlt = 0x1A2201BF,
   kA8B8G8R8 = 0x1A200186,
   kA8R8G8B8 = 0x18280186,
   kX8R8G8B8 = 0x28280086,
@@ -31,6 +30,9 @@ enum class D3DFormat : u32 {
   // PGR3's back buffer and race scene: GPUTEXTUREFORMAT 63,
   // k_2_10_10_10_FLOAT_EDRAM, the EDRAM-only 7e3 format.
   kA2B10G10R10FEdram = 0x1A22ABBF,
+  // PGR4's (XDK 6132) spelling of the same, its scene, menu and front-end
+  // surfaces: the GPUTEXTUREFORMAT byte is 63 as well.
+  kA2B10G10R10FEdramAlt = 0x1A2201BF,
   // ConvertGuestFormat can also be handed the raw GPUTEXTUREFORMAT byte.
   kBare2101010As16161616 =
       u32(rex::graphics::xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16),
