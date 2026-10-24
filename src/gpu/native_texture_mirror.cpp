@@ -643,11 +643,60 @@ std::unordered_map<u32, std::pair<u32, u32>> s_texel_bases;
 // writes back).
 std::mutex g_resolve_mutex;
 std::unordered_map<u32, std::unique_ptr<GuestTexture>> g_resolve_targets;
+// The base address each resolve target's header had at its latest resolve,
+// and the reverse: another header pointed at that memory samples the same
+// target. PGR4's bonnet camera reads the previous frame's scene so, through a
+// k_16_16_16_16_EXPAND header aliasing the scene resolve (0x400CD27C), which
+// is a header the front end once resolved its depth into.
+std::unordered_map<u32, u32> g_resolve_base_of;
+std::unordered_map<u32, u32> g_resolve_by_base;
+
+void NoteResolveBaseLocked(u32 guest_va, u32 base) {
+  if (auto it = g_resolve_base_of.find(guest_va); it != g_resolve_base_of.end()) {
+    if (it->second == base)
+      return;
+    if (auto b = g_resolve_by_base.find(it->second);
+        b != g_resolve_by_base.end() && b->second == guest_va)
+      g_resolve_by_base.erase(b);
+  }
+  g_resolve_base_of[guest_va] = base;
+  if (base)
+    g_resolve_by_base[base] = guest_va;
+}
+
+void ForgetResolveBaseLocked(u32 guest_va) {
+  auto it = g_resolve_base_of.find(guest_va);
+  if (it == g_resolve_base_of.end())
+    return;
+  if (auto b = g_resolve_by_base.find(it->second);
+      b != g_resolve_by_base.end() && b->second == guest_va)
+    g_resolve_by_base.erase(b);
+  g_resolve_base_of.erase(it);
+}
 
 GuestTexture *FindResolveTarget(u32 guest_va) {
   std::lock_guard lock(g_resolve_mutex);
   auto it = g_resolve_targets.find(guest_va);
   return it != g_resolve_targets.end() ? it->second.get() : nullptr;
+}
+
+// The resolve target a texture header samples: its own while it still
+// describes it (the same format, or the base of its latest resolve), else the
+// one whose latest resolve wrote the memory the header now points at.
+GuestTexture *FindResolveTargetForHeader(u32 guest_va,
+                                         const xe::xe_gpu_texture_fetch_t &header) {
+  const u32 base = u32(header.base_address) << 12;
+  std::lock_guard lock(g_resolve_mutex);
+  if (auto it = g_resolve_targets.find(guest_va); it != g_resolve_targets.end()) {
+    const auto b = g_resolve_base_of.find(guest_va);
+    if (it->second->guestFormat == u32(header.format) ||
+        (b != g_resolve_base_of.end() && b->second == base))
+      return it->second.get();
+  }
+  if (auto b = g_resolve_by_base.find(base); base && b != g_resolve_by_base.end())
+    if (auto it = g_resolve_targets.find(b->second); it != g_resolve_targets.end())
+      return it->second.get();
+  return nullptr;
 }
 
 void ForEachResolveTarget(
@@ -697,6 +746,7 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
                              : plume::RenderTextureViewDimension::TEXTURE_2D;
 
   std::lock_guard lock(g_resolve_mutex);
+  NoteResolveBaseLocked(guest_va, u32(fetch.base_address) << 12);
   auto &slot = g_resolve_targets[guest_va];
   if (slot && slot->width == width && slot->height == height &&
       slot->format == format && slot->viewDimension == view_dim)
@@ -777,6 +827,7 @@ bool EvictGuestTexture(u32 guest_va) {
       g_pending_native_destroy[Video::RetireSlot("evicted resolve target")]
           .push_back(std::move(it->second));
       g_resolve_targets.erase(it);
+      ForgetResolveBaseLocked(guest_va);
     }
   }
   EvictNativeTexture(guest_va);
@@ -843,7 +894,9 @@ GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va) {
 
 namespace {
 GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]) {
-  if (GuestTexture *resolved = FindResolveTarget(guest_va))
+  xe::xe_gpu_texture_fetch_t header;
+  std::memcpy(&header, fc, sizeof(header));
+  if (GuestTexture *resolved = FindResolveTargetForHeader(guest_va, header))
     return resolved;
   // dword1: format/endian/tiled/base, dword2: size, dword5: mip address.
   u64 signature =

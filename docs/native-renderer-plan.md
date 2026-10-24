@@ -678,6 +678,15 @@ these changes. Each was found by comparing a native frame with xenos.
   hardware compute one: 91 pixel shaders, mostly the metallic car paint
   looking its colour up in a 3x512 table whose sampler minifies with point
   filtering.
+- **Aliased resolve destinations.** The bonnet camera (LB three times)
+  reflects the previous frame's scene: its paint (`psCarPaintMetallicBonnet*`,
+  sampler 12) reads a k_16_16_16_16_EXPAND header pointed at the memory of
+  the scene resolve (0x400CD27C). That header (0x40E5D08C) had taken the
+  front end's depth resolve, and the host bound that stale target by its
+  address, so the bonnet was black. A header now samples its own resolve
+  target only while it still describes it (the same format, or the base of
+  its latest resolve), and otherwise the target whose latest resolve wrote
+  the memory it points at.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
@@ -701,6 +710,8 @@ tries.
   need it added in the shader, per sampler slot, as Xenia does. Every such
   fetch traced so far has a bias of 0. Vulkan applies the sampler's bias to
   explicit levels, so the backends may differ until then.
+- The loading screen before a race shows a black background where xenos
+  shows static artwork.
 - A day race in rain, and the rest of the exit list below (every city by
   day and night, every weather, replays, photo mode).
 
