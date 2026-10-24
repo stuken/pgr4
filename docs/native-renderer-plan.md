@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively; left: a rain race, the fetch constant's LOD bias on explicit-level fetches, and the rest of the exit list. See Phase 5 findings. |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Not started.** |
 
 ## What we know about PGR4
@@ -710,33 +710,84 @@ these changes. Each was found by comparing a native frame with xenos.
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
   only where the scene's alpha is 1. So the host clears the 7e3 scene's
   alpha to 1 at `BeginTiling`, as the resolve's clear already did.
+- **Fetch constant LOD bias.** The fetch constant's `lod_bias` (10 bits
+  signed, in 1/32nds) went to the host sampler's `MipLODBias`, which D3D12
+  does not apply to `SampleLevel` and Vulkan does, so the backends
+  differed on explicit-level fetches. PGR4's shaders now add it in the
+  shader, as Xenia does: each sampler reads `{name}_LodBias` from
+  `SharedConstants` (bytes 800-863 for the pixel slots, 864-879 for the
+  vertex slots) on top of the instruction's bias, every fetch that is not
+  an explicit level is a `SampleBias`, and the host sampler's
+  `MipLODBias` is 0. In the front end and races only slot 13 carries a
+  bias (-1, the car paint's 3x512 table and a 512x512 texture), so the
+  picture barely changes.
+- **Fetch filter overrides.** A fetch instruction can override its
+  fetch constant's filters (`magFilter`, `minFilter`, `mipFilter`; 3 keeps
+  the fetch constant's) and anisotropy (`anisoFilter`; 7 keeps it).
+  XenosRecomp ignored them. PGR4's pixel shaders use four combinations:
+  anisotropy off (276 fetches: the light, material, bump and specular maps
+  of `psSceneDiffuse*`, `psSceneRoadSurfaceGotham4*` and the puddles),
+  point with a point mip (14) or the constant's mip (10) (`psCrowdSprite*`,
+  `psCrowdGeneric*`, `psShadowGaussBlurHorizontal`), and linear (10:
+  `psShadowGaussBlurVertical`, `psSkinnedModel_Shadow_*_Day`). XenosRecomp
+  maps each to a sampler variant (`SAMPLER_VARIANT_NO_ANISO`, `POINT`,
+  `POINT_MIP_POINT`, `LINEAR`) and reads that variant's sampler index from
+  `SharedConstants` bytes 880-1135 (16 slots per variant). The host decodes
+  the fetch constant with the override applied for each pixel slot. Any
+  other combination, or one in a vertex shader, fails the compile. So
+  `pgr4_anisotropy` no longer forces anisotropy onto fetches that turn it
+  off.
+- **Impact effect.** In crash frames the final pass is `ps_821ADE28`
+  (`41026B823D173563`) in place of the tone map `ps_821ADB68`, driven by
+  `g_vGrading2` (c172). `.y` ripples the screen UVs, and `.x` blends toward
+  a grain, `frac(n² / (7907 + 109·x))` with `n = 128u + 92160v`, which at
+  720p aliases into a coloured fish-scale moiré. Xenos draws the same
+  (c172.x 0.37 on the first crash frame, fading over about 1.5 s), so the
+  "static" is the game's effect, not a host fault.
+- **Post-processing cvars.** `pgr4_fxaa` was keyed to PGR3's composite
+  hash and did nothing; it now runs after PGR4's tone map
+  (`DFF1E0F0383C494B`). `pgr4_shadow_scale` defaults to 1, the console's
+  shadow sizes. Checked in the St Petersburg day race against the
+  defaults: `pgr4_shadow_scale` 2 and 4 resolve the car shadow map at
+  1024 and 2048 (and the three 256x256 maps at 512 and 1024), with
+  sharper car outlines in the map; `pgr4_msaa=false` steps the edges (edge
+  contrast 91 to 115); `pgr4_fxaa=true` softens them (91 to 73) and the
+  textures a little; `pgr4_anisotropy=16` sharpens the road (detail 5.3 to
+  9.8 near, 11.4 to 12.2 far).
 
 **Race kinds.** `NATIVE=1 scripts/runs/custom_race.sh` drives the native
 build through the same Custom Match script as Phase 4 (and
-`scratch/runs/retry_race.sh` reruns it until the last dump is a race
+`scratch/runs/retry_race.sh` reruns it until the traced frame is a race
 frame). Night, snow, bike and in-car races render as on xenos. The native
-menus run behind xenos in frames, and about half the runs lose the press
-that enters Single Player (the content check dialog takes it) and end on
-the main menu; the heavy rain race has not been reached natively in four
-tries.
+frame rate varies 2x between runs while the boot screens advance by time,
+so timed presses used to land on the wrong screen: a slow boot let the
+profile dialog take the press meant for Single Player. The script now
+presses `start` every 4 s through the boot screens until
+`wait:content#2`, the front end's second `XContentCreateEnumerator`
+(`0x826B1658`, about 1 s before the main menu), drops the spare presses,
+and times every later press from there. Since then the D3D12 and Vulkan
+night races and six day races each reached the race on the first try. The
+heavy rain race has not been run with it yet.
 
 **Open.**
-- The fetch constant's LOD bias (`lod_bias`, 5 fractional bits) reaches
-  only fetches the hardware computes a LOD for, through the host sampler's
-  `MipLODBias`. Explicit-level fetches (`SampleLevel`) left PGR4's road
-  at level 0 under a +7 bias, so D3D12 appears not to apply it there; they
-  need it added in the shader, per sampler slot, as Xenia does. Every such
-  fetch traced so far has a bias of 0. Vulkan applies the sampler's bias to
-  explicit levels, so the backends may differ until then.
-- A day race in rain, and the rest of the exit list below (every city by
-  day and night, every weather, replays, photo mode).
+- A rain race (heavy rain natively, and a day race in rain), and the rest
+  of the exit list below (every city by day and night, every weather,
+  replays, photo mode).
+- `pgr4_fxaa` skips crash frames, whose final pass is `ps_821ADE28`
+  rather than the tone map.
+- Every race logs about 360 rejected native textures: 156x1 linear
+  textures of format 0x20 (`va=0x41908324` and three others).
 
 `pgr4_dump_resolve_sources` (with `pgr4_dump_frames`) writes each resolve's
 source as the resolve found it, as `pgr4_frame_N_sK_<dest>.bmp`. It shows
 which pass first goes wrong. `pgr4_trace_frame` now prints every non-zero
 PS constant of a traced `DrawUP`, and the xenos trace prints the PS
 constants from c150 for `BeginVertices` and the VS constants from c200 for
-`Draw`.
+`Draw`. The input script takes `dump@<s>s` and `trace@<s>s` entries
+(fractional seconds allowed), timed like presses, so captures land on the
+same scene at any frame rate; both builds honour them. A trace fills the
+5 MB logs quickly, and only 20 rotated files are kept, so trace only the
+frames needed.
 
 ---
 
