@@ -694,6 +694,17 @@ these changes. Each was found by comparing a native frame with xenos.
   the loading screen before a race blends the last menu frame resolved from
   it (0x400CD380) by its alpha, so it showed black where xenos shows the
   menu's car. Both words now count as 7e3.
+- **NaN on 7e3 targets.** Xenos' 7e3 EDRAM formats cannot hold NaN,
+  infinity or values above 31.875, so what a pixel shader writes is clamped
+  on the way in; the host's FP16 stand-in keeps a NaN. At a resolution scale
+  above 1 they showed as black blocks: a single-frame smudge when the
+  burnout smoke produced one (spread by the motion blur and bloom), and a
+  sharp rectangle on the road when the 320x180 reflection view held a patch
+  of them, which the B-spline upscale to the scene's scale filled in solid
+  (found from a RenderDoc capture). PGR4's pixel shaders now end with
+  `clamp7e3(oC0)` under `SPEC_CONSTANT_CLAMP_7E3`, which the host sets while
+  the bound target's GPUTEXTUREFORMAT is 63 (the scene) or 54 (the
+  reflection view, 0x182800B6).
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,

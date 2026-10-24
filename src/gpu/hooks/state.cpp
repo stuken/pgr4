@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/graphics/xenos.h>
 #include <rex/hook.h>
 #include <rex/types.h>
 
@@ -385,6 +386,20 @@ void BindRenderTarget(PPCContext &ctx, u8 *base, u32 device_va, u32 surface_va) 
   pgr4::gpu::Video::SetDirtyValue<plume::RenderSampleCounts>(
       s.dirtyStates.pipelineState, s.pipelineState.sampleCount,
       surface ? surface->sampleCount : plume::RenderSampleCount::COUNT_1);
+  // A 7e3 target clamps what the pixel shaders write (NaN to 0, colour to
+  // 31.875); the host's FP16 stand-in would keep a NaN, which the motion blur
+  // and bloom then spread into black blocks (PGR4's burnout smoke), and the
+  // reflection view's upscale into black rectangles on the road. Both of the
+  // GPUTEXTUREFORMATs the host gives that stand-in count: 63 (the scene, the
+  // menus) and 54 (the 320x180 reflection view, 0x182800B6).
+  const u32 gpu_format = surface ? surface->guestFormat & 0x3Fu : 0u;
+  const bool target_7e3 =
+      surface && (gpu_format == u32(rex::graphics::xenos::TextureFormat::k_2_10_10_10_FLOAT_EDRAM) ||
+                  gpu_format == u32(rex::graphics::xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16));
+  pgr4::gpu::Video::SetDirtyValue<u32>(
+      s.dirtyStates.pipelineState, s.pipelineState.specConstants,
+      (s.pipelineState.specConstants & ~pgr4::gpu::kSpecConstantClamp7e3) |
+          (target_7e3 ? pgr4::gpu::kSpecConstantClamp7e3 : 0u));
   pgr4::gpu::Video::SetDefaultViewport(
       pgr4::mem::at<pgr4::gpu::D3DDevice>(device_va), surface);
   GrowDepthToCoverTarget();

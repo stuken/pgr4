@@ -30,6 +30,10 @@
 REXCVAR_DEFINE_STRING(pgr4_dump_frames, "", kCvarGroup,
                       "Comma-separated present frame numbers to write as "
                       "pgr4_frame_N.bmp in the user data folder");
+REXCVAR_DEFINE_BOOL(pgr4_dump_resolve_targets, true, kCvarGroup,
+                    "In the pgr4_dump_frames frames, also write every resolve "
+                    "target as it stands after the frame "
+                    "(pgr4_frame_N_rt_<va>_WxH.bmp)");
 REXCVAR_DEFINE_BOOL(pgr4_dump_resolve_sources, false, kCvarGroup,
                     "In the pgr4_dump_frames frames, also write each resolve's "
                     "source surface as the resolve found it "
@@ -294,12 +298,14 @@ void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
     PGR4_INFO("pgr4_dump_frames: wrote {} ({}x{})", path.string(), rt->width,
              rt->height);
   // Every render target the guest resolved, as it stands after this frame.
-  ForEachResolveTarget([&](u32 guest_va, GuestTexture *tex) {
-    const auto rt_path = dir / std::format("pgr4_frame_{}_rt_{:08X}_{}x{}.bmp",
-                                           wanted, guest_va, tex->width,
-                                           tex->height);
-    DumpTexture(s, tex, rt_path);
-  });
+  if (REXCVAR_GET(pgr4_dump_resolve_targets)) {
+    ForEachResolveTarget([&](u32 guest_va, GuestTexture *tex) {
+      const auto rt_path = dir / std::format("pgr4_frame_{}_rt_{:08X}_{}x{}.bmp",
+                                             wanted, guest_va, tex->width,
+                                             tex->height);
+      DumpTexture(s, tex, rt_path);
+    });
+  }
   for (size_t i = 0; i < g_snapshots.size(); ++i) {
     const Snapshot &snap = g_snapshots[i];
     DumpTexture(s, snap.texture,

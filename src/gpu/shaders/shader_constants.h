@@ -22,4 +22,5 @@ inline constexpr u32 kSpecConstantR11G11B10Normal =
     SPEC_CONSTANT_R11G11B10_NORMAL;
 inline constexpr u32 kSpecConstantDec3NNormal = SPEC_CONSTANT_DEC3N_NORMAL;
 inline constexpr u32 kSpecConstantAlphaTest = SPEC_CONSTANT_ALPHA_TEST;
+inline constexpr u32 kSpecConstantClamp7e3 = SPEC_CONSTANT_CLAMP_7E3;
 } // namespace pgr4::gpu
