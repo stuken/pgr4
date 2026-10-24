@@ -1,6 +1,7 @@
-"""From a folder of pgr4_dump_frames BMPs, keep each frame's last 1280x720
-resolve (the front buffer), save it as f<frame>.png and tile a labelled
-contact sheet.  usage: frames_sheet.py <bmp dir> <out dir> [cols]"""
+"""From a folder of pgr4_dump_frames BMPs, keep each frame's front buffer
+(the native build's pgr4_frame_<N>.bmp, else the xenos build's last 1280x720
+resolve), save it as f<frame>.png and tile a labelled contact sheet.
+usage: frames_sheet.py <bmp dir> <out dir> [cols]"""
 import os, re, sys, collections
 from PIL import Image, ImageDraw
 src, out = sys.argv[1], sys.argv[2]; cols = int(sys.argv[3]) if len(sys.argv) > 3 else 5
@@ -12,6 +13,9 @@ for f in os.listdir(src):
         fr, seq = int(m.group(1)), int(m.group(2))
         if fr not in last or seq > last[fr][0]:
             last[fr] = (seq, f)
+    m = re.match(r"pgr4_frame_(\d+)\.bmp", f)
+    if m:
+        last[int(m.group(1))] = (1 << 30, f)
 frames = sorted(last)
 thumbs = []
 for fr in frames:

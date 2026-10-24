@@ -16,6 +16,8 @@
 # change. London still lost presses at STEP=7 SLACK=12, so check the dumped
 # menu pages before trusting a trace from another city.
 #
+# NATIVE=1 runs the native build (out/build/native-relwithdebinfo, at 1x)
+# instead; it dumps the front buffer and every resolve target.
 # Runs the xenos build in out/build/win-amd64-relwithdebinfo and writes
 # scratch/runs/<name>/: the logs (all.log is the two rotated files joined),
 # the BMP dumps, f<frame>.png front buffers and sheet.png. It relies on the
@@ -30,6 +32,7 @@ slack=${SLACK:-0}
 name=$1; wkeys=$2; vkeys=$3; trace=$4; tmo=${5:-330}; extra=$6
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 B=$ROOT/out/build/win-amd64-relwithdebinfo
+[ -n "$NATIVE" ] && B=$ROOT/out/build/native-relwithdebinfo
 R=$ROOT/scratch/runs/$name
 rm -rf $R; mkdir -p $R/bmp
 S="start@10s,start@15s,start@20s,start@25s,start@30s,start@40s,right@47s,right@51s,right@55s,start@60s"
@@ -62,9 +65,15 @@ S="$S,start@${t}s,rt@$((t+17))s+6000"
 F="${DUMPS:-$(seq -s, 1100 50 2000)},$trace"
 echo "$S" > $R/script.txt
 cd $B
-timeout $tmo ./pgr4.exe --log_file=$R/pgr4.log --pgr4_input_script=$S --readback_resolve=full \
-  --d3d12_readback_resolve=true --pgr4_dump_frames=$F --pgr4_trace_frame=$trace \
-  --pgr4_shader_census=true > /dev/null 2>&1 || true
+if [ -n "$NATIVE" ]; then
+  timeout $tmo ./pgr4.exe --log_file=$R/pgr4.log --pgr4_input_script=$S \
+    --pgr4_resolution_scale=1 --pgr4_dump_frames=$F --pgr4_trace_frame=$trace \
+    > /dev/null 2>&1 || true
+else
+  timeout $tmo ./pgr4.exe --log_file=$R/pgr4.log --pgr4_input_script=$S --readback_resolve=full \
+    --d3d12_readback_resolve=true --pgr4_dump_frames=$F --pgr4_trace_frame=$trace \
+    --pgr4_shader_census=true > /dev/null 2>&1 || true
+fi
 mv user/pgr4_frame_* $R/bmp/ 2>/dev/null || true
 cat $R/pgr4.1.log $R/pgr4.log > $R/all.log 2>/dev/null || cp $R/pgr4.log $R/all.log
 python $ROOT/scripts/runs/frames_sheet.py $R/bmp $R 6
