@@ -673,7 +673,12 @@ these changes. Each was found by comparing a native frame with xenos.
   XenosRecomp sampled the register LOD as an explicit level. PGR4's road
   shaders fetch their base maps so with the register LOD at 0 (135 such
   fetches in the set), so the road sampled level 0 and shimmered. PGR4's
-  build now emits SampleBias for them.
+  build now emits SampleBias for them. A fetch with neither LOD source samples at an explicit
+  level (the bias alone), where XenosRecomp let the hardware compute one:
+  91 pixel shaders, mostly the metallic car paint looking its colour up in
+  a 3x512 table whose sampler minifies with point filtering. The fetch
+  constant's own LOD bias is still left to the sampler for these explicit
+  levels, which D3D12's SampleLevel does not apply.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
