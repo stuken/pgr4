@@ -437,16 +437,8 @@ REX_HOOK_RAW(D3DDevice_CreateVertexDeclaration) {
   }
 }
 
-// (device, declaration)
-REX_HOOK_RAW(D3DDevice_SetVertexDeclaration) {
-  const u32 decl_va = ctx.r4.u32;
-  __imp__D3DDevice_SetVertexDeclaration(ctx, base);
-  GuestVertexDeclaration *decl = nullptr;
-  {
-    std::lock_guard lock(g_mutex);
-    if (auto it = g_decls.find(decl_va); it != g_decls.end())
-      decl = it->second;
-  }
+namespace {
+void BindVertexDeclaration(GuestVertexDeclaration *decl) {
   // The recompiled VS guards its packed normal decodes on these bits.
   auto &s = pgr4::gpu::state();
   u32 spec = s.pipelineState.specConstants &
@@ -460,14 +452,109 @@ REX_HOOK_RAW(D3DDevice_SetVertexDeclaration) {
   pgr4::gpu::Video::SetVertexDeclaration(decl);
 }
 
+// 6132's D3DDECLTYPEs for what an FVF can describe.
+constexpr u32 kDeclTypeFloat1 = 0x2C83A4;
+constexpr u32 kDeclTypeFloat2 = 0x2C23A5;
+constexpr u32 kDeclTypeFloat3 = 0x2A23B9;
+constexpr u32 kDeclTypeFloat4 = 0x1A23A6;
+constexpr u32 kDeclTypeD3DColor = 0x182886;
+constexpr u32 kDeclTypeUnused = 0xFFFFFFFF;
+// D3DDECLUSAGE.
+constexpr u8 kUsagePosition = 0, kUsageNormal = 3, kUsagePSize = 4, kUsageTexCoord = 5,
+             kUsageColor = 10;
+
+// The host declaration for an FVF: stream 0, its elements packed in D3D9
+// order (position, normal, point size, diffuse, specular, texture
+// coordinates). Built once per FVF. Null for an FVF it cannot describe.
+GuestVertexDeclaration *FvfDeclaration(u32 fvf) {
+  static std::unordered_map<u32, GuestVertexDeclaration *> s_fvf_decls;
+  {
+    std::lock_guard lock(g_mutex);
+    if (auto it = s_fvf_decls.find(fvf); it != s_fvf_decls.end())
+      return it->second;
+  }
+  std::vector<pgr4::gpu::GuestVertexElement> elements;
+  u32 offset = 0;
+  auto add = [&](u32 type, u32 bytes, u8 usage, u8 index) {
+    pgr4::gpu::GuestVertexElement e{};
+    e.stream = 0;
+    e.offset = u16(offset);
+    e.type = type;
+    e.usage = usage;
+    e.usageIndex = index;
+    elements.push_back(e);
+    offset += bytes;
+  };
+  bool ok = true;
+  switch (fvf & 0x400Eu) { // D3DFVF_POSITION_MASK
+  case 0x002: // XYZ
+    add(kDeclTypeFloat3, 12, kUsagePosition, 0);
+    break;
+  case 0x004:  // XYZRHW: window coordinates, which the VTE setting handles
+  case 0x4002: // XYZW
+    add(kDeclTypeFloat4, 16, kUsagePosition, 0);
+    break;
+  default: // none, or blend weights (XYZB1-5)
+    ok = (fvf & 0x400Eu) == 0;
+    break;
+  }
+  if (fvf & 0x010) // NORMAL
+    add(kDeclTypeFloat3, 12, kUsageNormal, 0);
+  if (fvf & 0x020) // PSIZE
+    add(kDeclTypeFloat1, 4, kUsagePSize, 0);
+  if (fvf & 0x040) // DIFFUSE
+    add(kDeclTypeD3DColor, 4, kUsageColor, 0);
+  if (fvf & 0x080) // SPECULAR
+    add(kDeclTypeD3DColor, 4, kUsageColor, 1);
+  // D3DFVF_TEXCOUNT in bits 8-11; D3DFVF_TEXCOORDSIZEn(i) in bits 16 + 2i:
+  // 0 two floats, 1 three, 2 four, 3 one.
+  const u32 tex_count = (fvf >> 8) & 0xF;
+  for (u32 i = 0; i < tex_count && i < 8; ++i) {
+    switch ((fvf >> (16 + 2 * i)) & 3) {
+    case 0: add(kDeclTypeFloat2, 8, kUsageTexCoord, u8(i)); break;
+    case 1: add(kDeclTypeFloat3, 12, kUsageTexCoord, u8(i)); break;
+    case 2: add(kDeclTypeFloat4, 16, kUsageTexCoord, u8(i)); break;
+    default: add(kDeclTypeFloat1, 4, kUsageTexCoord, u8(i)); break;
+    }
+  }
+  GuestVertexDeclaration *decl = nullptr;
+  if (ok && !elements.empty()) {
+    pgr4::gpu::GuestVertexElement end{};
+    end.stream = 0xFF;
+    end.type = kDeclTypeUnused;
+    elements.push_back(end);
+    decl = pgr4::gpu::CreateVertexDeclaration(elements.data());
+  } else {
+    PGR4_WARN_FIRST(4, "D3DDevice_SetFVF 0x{:X}: not described by a declaration", fvf);
+  }
+  std::lock_guard lock(g_mutex);
+  s_fvf_decls[fvf] = decl;
+  return decl;
+}
+} // namespace
+
+// (device, declaration)
+REX_HOOK_RAW(D3DDevice_SetVertexDeclaration) {
+  const u32 decl_va = ctx.r4.u32;
+  __imp__D3DDevice_SetVertexDeclaration(ctx, base);
+  GuestVertexDeclaration *decl = nullptr;
+  {
+    std::lock_guard lock(g_mutex);
+    if (auto it = g_decls.find(decl_va); it != g_decls.end())
+      decl = it->second;
+  }
+  BindVertexDeclaration(decl);
+}
+
 // (device, FVF). It builds a declaration inside the device (+0x2F98) and
-// binds it without D3DDevice_SetVertexDeclaration, so the host does not see
-// it. D3D__InitializeStateTables calls it at device creation; warn if
-// anything else does (mercury's sub_8285B278 is the only other caller).
+// binds it without D3DDevice_SetVertexDeclaration, so the host builds the
+// same declaration from the FVF and binds that. D3D__InitializeStateTables
+// calls it at device creation; mercury's sub_8285B278 draws the Bink movie
+// planes (XYZ | TEX1) and other 2D quads through it.
 REX_HOOK_RAW(D3DDevice_SetFVF) {
-  if (u32(ctx.lr) != kInitializeStateTablesSetFVFReturn)
-    PGR4_WARN_FIRST(4, "D3DDevice_SetFVF 0x{:X} from 0x{:08X}: FVF declarations "
-                       "are not modelled",
-                    ctx.r4.u32, u32(ctx.lr));
+  const u32 fvf = ctx.r4.u32;
   __imp__D3DDevice_SetFVF(ctx, base);
+  if (u32(ctx.lr) == kInitializeStateTablesSetFVFReturn)
+    return;
+  BindVertexDeclaration(FvfDeclaration(fvf));
 }
