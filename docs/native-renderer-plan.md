@@ -667,6 +667,13 @@ these changes. Each was found by comparing a native frame with xenos.
   for `.x`. Volume mirrors did not take the fetch swizzle, so the road read
   another channel and was covered in white speckle at night. Volumes now
   take the same component mapping as 2D textures.
+- **Register LOD as a bias.** A pixel shader fetch that sets both the
+  computed and the register LOD takes the register LOD as a bias on the
+  computed one (Xenia folds it into the gradients), not as the level.
+  XenosRecomp sampled the register LOD as an explicit level. PGR4's road
+  shaders fetch their base maps so with the register LOD at 0 (135 such
+  fetches in the set), so the road sampled level 0 and shimmered. PGR4's
+  build now emits SampleBias for them.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
