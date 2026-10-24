@@ -38,6 +38,7 @@
 #include "gpu/frame_dump.h"
 #include "gpu/backend.h"
 #include "gpu/constant_buffers.h"
+#include "gpu/gpu_timing.h"
 #include "gpu/output.h"
 #include "gpu/settings.h"
 #include "gpu/perf_stats.h"
@@ -283,6 +284,7 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
                        plume::RenderTexture *back,
                        plume::RenderFramebuffer *back_fb) {
   PGR4_GPU_ZONE("RecordPresentPass");
+  perf::GpuMark(s, "present", rt);
   if (rt->layout != plume::RenderTextureLayout::SHADER_READ) {
     const bool needs_discard =
         (rt->layout == plume::RenderTextureLayout::UNKNOWN);
@@ -489,6 +491,7 @@ void Video::Present(GuestTexture *frontBuffer) {
   }
 
   const u32 cur = s.frame.load(std::memory_order_relaxed);
+  perf::GpuFrameEnd(s);
   s.command_lists[cur]->end();
   s.command_list_open = false;
 

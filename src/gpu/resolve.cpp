@@ -27,6 +27,7 @@
 #include "core/settings.h" // kCvarGroup
 #include "gpu/backend.h"
 #include "gpu/format.h"
+#include "gpu/gpu_timing.h"
 #include "gpu/output.h"
 #include "gpu/shaders/shader_cache.h"
 
@@ -38,6 +39,10 @@ REXCVAR_DEFINE_BOOL(pgr4_scaled_post_filters, true, kCvarGroup,
 // Off by default: an aliased destination is never written itself, and PGR3's
 // crowd impostor atlas (resolved once while a course loads) came back as
 // stale video memory once its 512x192 source surface moved on.
+REXCVAR_DEFINE_BOOL(pgr4_scale_copy_cache, true, kCvarGroup,
+                    "Performance experiment: reuse a texture's guest scale "
+                    "copy until the texture is written again, instead of "
+                    "copying it for every draw");
 REXCVAR_DEFINE_BOOL(pgr4_resolve_alias, false, kCvarGroup,
                     "Let a same-size, same-format resolve alias its source "
                     "surface instead of copying it");
@@ -71,6 +76,12 @@ bool CanAliasResolveLocked(const GuestTexture *src, const GuestTexture *dst) {
 }
 
 } // namespace
+
+void NoteTextureWrite(GuestTexture *t) {
+  static u64 s_version = 0;
+  if (t)
+    t->contentVersion = ++s_version;
+}
 
 void DetachSourceSurfaceLocked(VideoState &s, GuestTexture *texture) {
   if (!texture || !texture->sourceSurface)
@@ -160,6 +171,7 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
   BeginCommandList(s);
   if (!s.command_list_open)
     return false;
+  perf::GpuMark(s, reason, dst);
 
   s.draw_framebuffer_bound = false;
 
@@ -356,6 +368,7 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
                                    plume::RenderTextureLayout::SHADER_READ);
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &post, 1);
   dst->layout = plume::RenderTextureLayout::SHADER_READ;
+  NoteTextureWrite(dst);
   return true;
 }
 
@@ -372,6 +385,7 @@ bool ClearColorTargetLocked(VideoState &s, GuestTexture *dst,
   if (!s.command_list_open)
     return false;
   s.draw_framebuffer_bound = false;
+  perf::GpuMark(s, "clear texture", dst);
 
   plume::RenderFramebuffer *dst_fb = GetFramebuffer(s, dst, nullptr);
   if (!dst_fb)
@@ -390,6 +404,7 @@ bool ClearColorTargetLocked(VideoState &s, GuestTexture *dst,
   s.command_list->clearColor(0, color);
   s.command_list->setFramebuffer(nullptr);
   s.draw_framebuffer_bound = false;
+  NoteTextureWrite(dst);
 
   plume::RenderTextureBarrier post(dst->texture,
                                    plume::RenderTextureLayout::SHADER_READ);
@@ -579,6 +594,7 @@ bool ShaderCopyRegionLocked(VideoState &s, GuestTexture *src, GuestTexture *dst,
                                    plume::RenderTextureLayout::SHADER_READ);
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &post, 1);
   dst->layout = plume::RenderTextureLayout::SHADER_READ;
+  NoteTextureWrite(dst);
   return true;
 }
 
@@ -650,6 +666,7 @@ bool CopySurfaceRegionLocked(VideoState &s, GuestTexture *src, GuestTexture *dst
                                    plume::RenderTextureLayout::SHADER_READ);
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &post, 1);
   dst->layout = plume::RenderTextureLayout::SHADER_READ;
+  NoteTextureWrite(dst);
   return true;
 }
 
@@ -702,6 +719,7 @@ void Video::ResolveRtToTexture(GuestTexture *dst,
                     u32(src_rect->bottom) != src->height)) ||
       dst_x != 0 || dst_y != 0;
   if (partial) {
+    perf::GpuMark(s, "partial resolve", dst);
     if (CopySurfaceRegionLocked(s, src, dst, src_rect, dst_x, dst_y)) {
       s.last_resolved_dst = dst;
       DetachSourceSurfaceLocked(s, dst);
@@ -844,11 +862,22 @@ void BuildGuestScaleCopiesLocked(VideoState &s) {
     GuestTexture *copy = tex->guestScaleCopy.get();
     if (copy->width != w || copy->height != h)
       continue;
+    // Current until its source is written again: the scene's 320x180
+    // reflection view, upscaled for every scene draw, is drawn once a frame.
+    if (REXCVAR_GET(pgr4_scale_copy_cache) && copy->scaledFrom == src &&
+        src->contentVersion &&
+        copy->scaledVersion == src->contentVersion) {
+      s.sample_overrides[i] = copy;
+      continue;
+    }
     if (CopySurfaceToTextureLocked(s, src, copy,
                                    down ? "GuestScaleCopy" : "GuestScaleUpscale",
                                    down ? CopyFilter::Default
-                                        : CopyFilter::SmoothUpscale))
+                                        : CopyFilter::SmoothUpscale)) {
       s.sample_overrides[i] = copy;
+      copy->scaledFrom = src;
+      copy->scaledVersion = src->contentVersion;
+    }
   }
 }
 
@@ -876,6 +905,7 @@ void FxaaAfterCompositeLocked(VideoState &s) {
   plume::RenderFramebuffer *fb = GetFramebuffer(s, rt, nullptr);
   if (!pipeline || !fb)
     return;
+  perf::GpuMark(s, "fxaa", rt);
   GuestTexture *src = ResolvedSingleSampleLocked(s, rt);
   if (!src || src->descriptorIndex == kInvalidDescriptorIndex)
     return;
@@ -905,6 +935,7 @@ void FxaaAfterCompositeLocked(VideoState &s) {
                                            kCopyPushConstantByteOffset,
                                            sizeof(push));
   s.command_list->drawInstanced(3, 1, 0, 0);
+  NoteTextureWrite(rt);
   // The next guest draw binds its own framebuffer, pipeline and viewport.
   s.current_pso = nullptr;
   s.dirtyStates.pipelineState = true;

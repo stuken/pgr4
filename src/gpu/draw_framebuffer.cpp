@@ -16,6 +16,7 @@
 #include <plume_render_interface.h>
 
 #include "gpu/gpu_profiling.h"
+#include "gpu/gpu_timing.h"
 
 #include "core/logging.h"
 
@@ -220,6 +221,12 @@ bool Video::BindDrawFramebufferLocked(bool color_clear_follows) {
     return false;
   }
 
+  perf::GpuMark(s, rt ? "pass" : "depth pass", rt ? rt : ds);
+  // Draws into a target follow its bind, so a copy of it taken while another
+  // is bound stays current until this.
+  NoteTextureWrite(rt);
+  NoteTextureWrite(rt1);
+  NoteTextureWrite(ds);
   bool discard_rt = false;
   bool discard_ds = false;
   TransitionTargetsToWrite(s, rt, ds, discard_rt, discard_ds);

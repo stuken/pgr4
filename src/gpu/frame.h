@@ -47,6 +47,8 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
 bool MaterializeOutboundLocked(VideoState &s, GuestTexture *source,
                                bool aliasable_only = false);
 void MaterializeInboundLocked(VideoState &s, GuestTexture *dst);
+// Its content changes from here on (GuestTexture::contentVersion).
+void NoteTextureWrite(GuestTexture *t);
 void DetachSourceSurfaceLocked(VideoState &s, GuestTexture *texture);
 bool FullscreenChainClassLocked(const VideoState &s, const GuestTexture *t);
 

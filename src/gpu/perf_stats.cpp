@@ -15,6 +15,7 @@
 
 #include "core/logging.h"
 #include "core/settings.h"
+#include "gpu/gpu_timing.h"
 
 REXCVAR_DEFINE_INT32(pgr4_perf_stats, 0, kCvarGroup,
                      "Log frame and renderer hot-path timings every N "
@@ -165,6 +166,10 @@ void OnPresent() {
   }
   if (!line.empty())
     PGR4_INFO("[perf] per counter:{}", line);
+  if (const std::string gpu = GpuReport(n); !gpu.empty())
+    PGR4_INFO("[perf] {}", gpu);
+  if (const std::string memory = MemoryReport(); !memory.empty())
+    PGR4_INFO("[perf] {}", memory);
   const auto h = RefreshHistogram();
   if (h[0] + h[1] + h[2] + h[3] + h[4]) {
     double refresh_ms = 0;

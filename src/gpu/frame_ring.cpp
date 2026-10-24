@@ -27,6 +27,7 @@
 
 #include "core/logging.h"
 #include "gpu/constant_buffers.h"
+#include "gpu/gpu_timing.h"
 #include "gpu/host_resource_heap.h"
 #include "gpu/native_texture_mirror.h"
 #include "gpu/surface_registry.h"
@@ -69,6 +70,7 @@ void BeginCommandList(VideoState &s) {
   s.dirtyStates.pixelShaderConstants = true;
   s.current_pso = nullptr;
   InvalidateSharedBinding();
+  perf::GpuFrameBegin(s);
 #if defined(REXGLUE_ENABLE_PROFILING) && defined(PGR4_D3D12)
   SetGPUProfilerCommandList(
       static_cast<plume::D3D12CommandList *>(s.command_list)->d3d);
@@ -227,6 +229,7 @@ void AdvanceAndWaitReused(VideoState &s) {
   if (s.command_list_submitted[slot]) {
     s.queue->waitForCommandFence(s.fences[slot].get());
     s.command_list_submitted[slot] = false;
+    perf::GpuCollect(slot);
 #if defined(REXGLUE_ENABLE_PROFILING) && defined(PGR4_D3D12)
     if (auto *ctx = GpuProfilerCtx()) {
       TracyD3D12NewFrame(ctx);
@@ -241,6 +244,7 @@ void SubmitOpenListLocked(VideoState &s) {
   if (!s.command_list_open)
     return;
   const u32 cur = s.frame.load(std::memory_order_relaxed);
+  perf::GpuFrameEnd(s);
   s.command_lists[cur]->end();
   s.command_list_open = false;
   const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};

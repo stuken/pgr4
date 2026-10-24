@@ -68,6 +68,12 @@ struct GuestTexture {
   // This texture box-filtered down to a lower-scale target's resolution, for
   // draws into that target (BuildGuestScaleCopiesLocked).
   std::unique_ptr<GuestTexture> guestScaleCopy;
+  // Bumped by every host write (NoteTextureWrite): bound as a draw target, a
+  // resolve, copy or clear into it. 0 until the first.
+  u64 contentVersion = 0;
+  // On a guestScaleCopy: the texture and the version it was last copied from.
+  const GuestTexture *scaledFrom = nullptr;
+  u64 scaledVersion = 0;
   u32 resolveLevel = 0;
   u32 resolveFace = 0;
   bool registered = false;
