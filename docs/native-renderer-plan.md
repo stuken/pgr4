@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the menus match xenos, and the race scene renders with predicated tiling, the motion blur and damage-deformed cars, and the Bink movies play. See Phase 5 findings. |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively; left: a rain race, the fetch constant's LOD bias on explicit-level fetches, and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Not started.** |
 
 ## What we know about PGR4
@@ -667,23 +667,42 @@ these changes. Each was found by comparing a native frame with xenos.
   for `.x`. Volume mirrors did not take the fetch swizzle, so the road read
   another channel and was covered in white speckle at night. Volumes now
   take the same component mapping as 2D textures.
-- **Register LOD as a bias.** A pixel shader fetch that sets both the
-  computed and the register LOD takes the register LOD as a bias on the
-  computed one (Xenia folds it into the gradients), not as the level.
-  XenosRecomp sampled the register LOD as an explicit level. PGR4's road
-  shaders fetch their base maps so with the register LOD at 0 (135 such
-  fetches in the set), so the road sampled level 0 and shimmered. PGR4's
-  build now emits SampleBias for them. A fetch with neither LOD source samples at an explicit
-  level (the bias alone), where XenosRecomp let the hardware compute one:
-  91 pixel shaders, mostly the metallic car paint looking its colour up in
-  a 3x512 table whose sampler minifies with point filtering. The fetch
-  constant's own LOD bias is still left to the sampler for these explicit
-  levels, which D3D12's SampleLevel does not apply.
+- **Fetch LOD modes.** A pixel shader fetch that sets both the computed and
+  the register LOD takes the register LOD as a bias on the computed one
+  (Xenia folds it into the gradients), not as the level. XenosRecomp
+  sampled the register LOD as an explicit level. PGR4's road shaders fetch
+  their base maps so with the register LOD at 0 (135 such fetches in the
+  set), so the road sampled level 0 and shimmered. PGR4's build now emits
+  SampleBias for them. A fetch with neither LOD source samples at an
+  explicit level (the instruction's bias alone), where XenosRecomp let the
+  hardware compute one: 91 pixel shaders, mostly the metallic car paint
+  looking its colour up in a 3x512 table whose sampler minifies with point
+  filtering.
 - **Motion blur.** `ps_821AE5A0` rebuilds each pixel's position from the
   scene depth (`g_vDepthScale`, c158), reprojects it with the previous
   frame's matrix (`g_mMatrix`, c154-c157) and samples along the difference,
   only where the scene's alpha is 1. So the host clears the 7e3 scene's
   alpha to 1 at `BeginTiling`, as the resolve's clear already did.
+
+**Race kinds.** `NATIVE=1 scripts/runs/custom_race.sh` drives the native
+build through the same Custom Match script as Phase 4 (and
+`scratch/runs/retry_race.sh` reruns it until the last dump is a race
+frame). Night, snow, bike and in-car races render as on xenos. The native
+menus run behind xenos in frames, and about half the runs lose the press
+that enters Single Player (the content check dialog takes it) and end on
+the main menu; the heavy rain race has not been reached natively in four
+tries.
+
+**Open.**
+- The fetch constant's LOD bias (`lod_bias`, 5 fractional bits) reaches
+  only fetches the hardware computes a LOD for, through the host sampler's
+  `MipLODBias`. Explicit-level fetches (`SampleLevel`) left PGR4's road
+  at level 0 under a +7 bias, so D3D12 appears not to apply it there; they
+  need it added in the shader, per sampler slot, as Xenia does. Every such
+  fetch traced so far has a bias of 0. Vulkan applies the sampler's bias to
+  explicit levels, so the backends may differ until then.
+- A day race in rain, and the rest of the exit list below (every city by
+  day and night, every weather, replays, photo mode).
 
 `pgr4_dump_resolve_sources` (with `pgr4_dump_frames`) writes each resolve's
 source as the resolve found it, as `pgr4_frame_N_sK_<dest>.bmp`. It shows
