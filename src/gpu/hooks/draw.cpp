@@ -40,6 +40,7 @@
 #include "gpu/device.h"
 #include "gpu/guest_buffers.h"
 #include "gpu/native_texture_mirror.h"
+#include "gpu/occlusion.h"
 #include "gpu/output.h"
 #include "gpu/resources.h"
 #include "gpu/perf_stats.h"
@@ -86,6 +87,25 @@ using pgr4::gpu::Video;
 
 using pgr4::gpu::D3DIndexBuffer;
 using pgr4::gpu::D3DVertexBuffer;
+
+// One guest draw's host draws, counted by the occlusion query open around
+// them, if any. Ended before anything else the draw records.
+class OcclusionScope {
+public:
+  explicit OcclusionScope(pgr4::gpu::VideoState &s) : s_(s) {
+    pgr4::gpu::occlusion::DrawBegin(s_);
+  }
+  ~OcclusionScope() { End(); }
+  void End() {
+    if (open_)
+      pgr4::gpu::occlusion::DrawEnd(s_);
+    open_ = false;
+  }
+
+private:
+  pgr4::gpu::VideoState &s_;
+  bool open_ = true;
+};
 
 // Draw counters, reported by LogDrawStats from the Present hook.
 struct DrawStats {
@@ -611,6 +631,7 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs &args) {
   auto *cmd_list = s.command_list;
   if (!cmd_list)
     return;
+  OcclusionScope occlusion(s);
 
   if (static_cast<xe::PrimitiveType>(primitive_type) ==
       xe::PrimitiveType::kQuadList) {
@@ -679,6 +700,7 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs &args) {
   } else {
     cmd_list->drawInstanced(args.vertexOrIndexCount, 1, args.startVertex, 0);
   }
+  occlusion.End();
   g_stats.recorded.fetch_add(1, std::memory_order_relaxed);
   CountRenderTarget();
   pgr4::gpu::FxaaAfterCompositeLocked(s);
@@ -909,6 +931,7 @@ void FlushPendingUP() {
   }
   g_stats.recorded.fetch_add(1, std::memory_order_relaxed);
   CountRenderTarget();
+  OcclusionScope occlusion(s);
   if (static_cast<xe::PrimitiveType>(p.primitive_type) ==
       xe::PrimitiveType::kQuadList) {
     const u32 quads = std::min(p.vertex_count / 4, Video::QuadlistMaxQuads());
@@ -929,6 +952,7 @@ void FlushPendingUP() {
   } else {
     s.command_list->drawInstanced(p.vertex_count, 1, 0, 0);
   }
+  occlusion.End();
   pgr4::gpu::FxaaAfterCompositeLocked(s);
 }
 

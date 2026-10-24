@@ -30,6 +30,7 @@
 #include "gpu/gpu_timing.h"
 #include "gpu/host_resource_heap.h"
 #include "gpu/native_texture_mirror.h"
+#include "gpu/occlusion.h"
 #include "gpu/surface_registry.h"
 
 namespace pgr4::gpu {
@@ -71,6 +72,7 @@ void BeginCommandList(VideoState &s) {
   s.current_pso = nullptr;
   InvalidateSharedBinding();
   perf::GpuFrameBegin(s);
+  occlusion::FrameBegin(s);
 #if defined(REXGLUE_ENABLE_PROFILING) && defined(PGR4_D3D12)
   SetGPUProfilerCommandList(
       static_cast<plume::D3D12CommandList *>(s.command_list)->d3d);
@@ -226,7 +228,8 @@ void AdvanceAndWaitReused(VideoState &s) {
   s.frame.store(slot, std::memory_order_relaxed);
   s.next_frame = (slot + 1) % kNumFrames;
   s.command_list = s.command_lists[slot].get();
-  if (s.command_list_submitted[slot]) {
+  const bool submitted = s.command_list_submitted[slot];
+  if (submitted) {
     s.queue->waitForCommandFence(s.fences[slot].get());
     s.command_list_submitted[slot] = false;
     perf::GpuCollect(slot);
@@ -237,6 +240,7 @@ void AdvanceAndWaitReused(VideoState &s) {
     }
 #endif
   }
+  occlusion::Collect(slot, submitted);
   ResetFrame(slot);
 }
 
@@ -245,6 +249,7 @@ void SubmitOpenListLocked(VideoState &s) {
     return;
   const u32 cur = s.frame.load(std::memory_order_relaxed);
   perf::GpuFrameEnd(s);
+  occlusion::FrameEnd(s);
   s.command_lists[cur]->end();
   s.command_list_open = false;
   const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};

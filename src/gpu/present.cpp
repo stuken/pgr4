@@ -39,6 +39,7 @@
 #include "gpu/backend.h"
 #include "gpu/constant_buffers.h"
 #include "gpu/gpu_timing.h"
+#include "gpu/occlusion.h"
 #include "gpu/output.h"
 #include "gpu/settings.h"
 #include "gpu/perf_stats.h"
@@ -492,6 +493,7 @@ void Video::Present(GuestTexture *frontBuffer) {
 
   const u32 cur = s.frame.load(std::memory_order_relaxed);
   perf::GpuFrameEnd(s);
+  occlusion::FrameEnd(s);
   s.command_lists[cur]->end();
   s.command_list_open = false;
 
