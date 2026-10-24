@@ -75,6 +75,8 @@ struct FrameUpload {
 struct SamplerSlotCache {
   u8 fc[sizeof(DeviceFetchConstant)]{};
   u32 sampler = 0;
+  u32 variants[SAMPLER_VARIANT_COUNT - 1]{}; // pixel slots only
+  float lodBias = 0.0f;
   i32 aniso = -1;
   bool clamp3d = false;
   bool valid = false;
@@ -360,7 +362,13 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
         vertex ? s.shared.vertexTexture3DIndices[k] : s.shared.texture3DIndices[k];
     u32 &texture_cube_index = vertex ? s.shared.vertexTextureCubeIndices[k]
                                      : s.shared.textureCubeIndices[k];
+    float &lod_bias =
+        vertex ? s.shared.vertexSamplerLodBiases[k] : s.shared.samplerLodBiases[k];
     sampler_index = 0;
+    lod_bias = 0.0f;
+    if (!vertex)
+      for (auto &variant : s.shared.samplerVariantIndices)
+        variant[k] = 0;
     texture2d_index = pgr4::gpu::kNullTexture2DDescriptorIndex;
     texture3d_index = pgr4::gpu::kNullTexture3DDescriptorIndex;
     texture_cube_index = pgr4::gpu::kNullTextureCubeDescriptorIndex;
@@ -400,27 +408,39 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
         if (sc.valid && sc.clamp3d == clamp3d && sc.aniso == aniso_now &&
             std::memcmp(sc.fc, &fc_be, sizeof(sc.fc)) == 0) {
           sampler_index = sc.sampler;
+          lod_bias = sc.lodBias;
         } else {
           const u32 fc[6] = {
               u32(fc_be.dword[0]), u32(fc_be.dword[1]), u32(fc_be.dword[2]),
               u32(fc_be.dword[3]), u32(fc_be.dword[4]), u32(fc_be.dword[5]),
           };
-          auto desc = DecodeFromFetch(fc);
-
-          // Shell fur volumes encode shell depth in W, and X360-default WRAP
-          // wraps a z=0 fetch's second tap to the tip slice and halves density,
-          // so force CLAMP to keep both taps on the dense base slice.
-          if (clamp3d) {
-            desc.addressW = plume::RenderTextureAddressMode::CLAMP;
-          }
-          const u32 resolved = ResolveSlotLocked(desc);
+          auto resolve = [&](u32 variant) {
+            auto desc = DecodeFromFetch(fc, variant);
+            // Shell fur volumes encode shell depth in W, and X360-default
+            // WRAP wraps a z=0 fetch's second tap to the tip slice and halves
+            // density, so force CLAMP to keep both taps on the dense base
+            // slice.
+            if (clamp3d) {
+              desc.addressW = plume::RenderTextureAddressMode::CLAMP;
+            }
+            return ResolveSlotLocked(desc);
+          };
+          const u32 resolved = resolve(SAMPLER_VARIANT_NONE);
+          // Vertex fetches take no overrides (XenosRecomp rejects them).
+          for (u32 v = 1; v < SAMPLER_VARIANT_COUNT; ++v)
+            sc.variants[v - 1] = vertex ? 0u : resolve(v);
           std::memcpy(sc.fc, &fc_be, sizeof(sc.fc));
           sc.sampler = resolved;
+          sc.lodBias = LodBiasFromFetch(fc);
           sc.aniso = aniso_now;
           sc.clamp3d = clamp3d;
           sc.valid = true;
           sampler_index = resolved;
+          lod_bias = sc.lodBias;
         }
+        if (!vertex)
+          for (u32 v = 1; v < SAMPLER_VARIANT_COUNT; ++v)
+            s.shared.samplerVariantIndices[v - 1][k] = sc.variants[v - 1];
       }
     }
   }

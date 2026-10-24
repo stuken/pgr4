@@ -118,10 +118,10 @@ bool IsNearest(xe::TextureFilter filter) {
   return filter == xe::TextureFilter::kPoint;
 }
 
-// The fetch constant's anisotropy limit, 0 when off. The shaders' tfetch
-// instructions all defer to the fetch constant (kUseFetchConst), so it is the
-// game's whole request. RR6 leaves it kDisabled except on a few race samplers,
-// which ask for 2:1 or 4:1.
+// The fetch constant's anisotropy limit, 0 when off. Most fetch instructions
+// defer to the fetch constant (kUseFetchConst); PGR4's that turn it off take
+// the SAMPLER_VARIANT_NO_ANISO sampler. RR6 leaves it kDisabled except on a
+// few race samplers, which ask for 2:1 or 4:1.
 u32 GuestAnisotropy(xe::AnisoFilter filter) {
   switch (filter) {
   case xe::AnisoFilter::kMax_1_1:
@@ -141,9 +141,31 @@ u32 GuestAnisotropy(xe::AnisoFilter filter) {
 
 } // namespace
 
-plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6]) {
+plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6], u32 variant) {
   xe::xe_gpu_texture_fetch_t fetch;
   std::memcpy(&fetch, fc, sizeof(fetch));
+
+  // The fetch instruction's filter overrides (SAMPLER_VARIANT_*), as Xenos
+  // applies them over the fetch constant's.
+  switch (variant) {
+  case SAMPLER_VARIANT_NO_ANISO:
+    fetch.aniso_filter = xe::AnisoFilter::kDisabled;
+    break;
+  case SAMPLER_VARIANT_POINT:
+    fetch.mag_filter = fetch.min_filter = xe::TextureFilter::kPoint;
+    fetch.aniso_filter = xe::AnisoFilter::kDisabled;
+    break;
+  case SAMPLER_VARIANT_POINT_MIP_POINT:
+    fetch.mag_filter = fetch.min_filter = fetch.mip_filter =
+        xe::TextureFilter::kPoint;
+    fetch.aniso_filter = xe::AnisoFilter::kDisabled;
+    break;
+  case SAMPLER_VARIANT_LINEAR:
+    fetch.mag_filter = fetch.min_filter = xe::TextureFilter::kLinear;
+    break;
+  default:
+    break;
+  }
 
   plume::RenderSamplerDesc d;
   d.addressU = ConvertClamp(fetch.clamp_x);
@@ -166,10 +188,10 @@ plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6]) {
                      ? plume::RenderMipmapMode::NEAREST
                      : plume::RenderMipmapMode::LINEAR;
   d.minLOD = static_cast<float>(fetch.mip_min_level);
-  // Signed, 5 fractional bits. RR6 sharpens many race textures by 1 to 3
-  // levels this way. The shaders' tfetch instructions carry no bias of their
-  // own, so the sampler can apply it whole.
-  d.mipLODBias = static_cast<float>(fetch.lod_bias) / 32.0f;
+  // The fetch constant's LOD bias goes to the shaders (LodBiasFromFetch), not
+  // the sampler: D3D12 leaves MipLODBias off explicit-level fetches, which
+  // Vulkan biases, so the shaders add it to every fetch alike.
+  d.mipLODBias = 0.0f;
 
   // pgr4_anisotropy "default" (0) takes the fetch constant's level; 2 to 16
   // forces that level. Either way only when the
@@ -195,6 +217,14 @@ plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6]) {
                       ? plume::RenderBorderColor::OPAQUE_WHITE
                       : plume::RenderBorderColor::TRANSPARENT_BLACK;
   return d;
+}
+
+float LodBiasFromFetch(const u32 fc[6]) {
+  xe::xe_gpu_texture_fetch_t fetch;
+  std::memcpy(&fetch, fc, sizeof(fetch));
+  // Signed, 5 fractional bits. RR6 sharpens many race textures by 1 to 3
+  // levels this way, PGR4's road by 7.
+  return static_cast<float>(fetch.lod_bias) / 32.0f;
 }
 
 u32 ResolveSlotLocked(const plume::RenderSamplerDesc &desc) {

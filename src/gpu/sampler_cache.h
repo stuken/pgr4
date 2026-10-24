@@ -16,10 +16,19 @@
 
 #include <plume_render_interface.h>
 
+#include "gpu/shaders/shader_constants.h"
+
 namespace pgr4::gpu {
 
-// Decode sampler bits from a 6-dword X360 fetch constant (host endianness).
-plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6]);
+// Decode sampler bits from a 6-dword X360 fetch constant (host endianness),
+// with a fetch instruction's filter overrides (SAMPLER_VARIANT_*,
+// gpu/shaders/shader_constants.h) on top.
+plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6],
+                                         u32 variant = SAMPLER_VARIANT_NONE);
+
+// The fetch constant's LOD bias in levels, which the shaders add to every
+// fetch (SharedConstants::samplerLodBiases), so the sampler carries none.
+float LodBiasFromFetch(const u32 fc[6]);
 
 // Returns the cached sampler's slot in sampler_descriptor_set, or 0 (reserved
 // default slot) on miss or heap full. Caller holds state().mutex (the miss

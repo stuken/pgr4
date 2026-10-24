@@ -100,9 +100,20 @@ struct SharedConstants {
   u32 vertexTexture3DIndices[4]{};   // c47, byte 752
   u32 vertexTextureCubeIndices[4]{}; // c48, byte 768
   u32 vertexSamplerIndices[4]{};     // c49, byte 784
+  // Each slot's fetch constant LOD bias, which the shaders add to every fetch
+  // (XenosRecomp SAMPLER_LOD_BIASES_OFFSET); the host samplers carry none.
+  float samplerLodBiases[16]{};      // c50..c53, byte 800
+  float vertexSamplerLodBiases[4]{}; // c54, byte 864
+  // Per pixel slot, the descriptor index of each sampler variant from
+  // SAMPLER_VARIANT_NO_ANISO on, for fetches whose instruction overrides the
+  // fetch constant's filtering (XenosRecomp SAMPLER_VARIANT_INDICES_OFFSET).
+  u32 samplerVariantIndices[SAMPLER_VARIANT_COUNT - 1][16]{}; // c55..c70, byte 880
 };
-static_assert(sizeof(SharedConstants) == 800);
+static_assert(sizeof(SharedConstants) == 1136);
+static_assert(offsetof(SharedConstants, samplerVariantIndices) == 880);
 static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 736);
+static_assert(offsetof(SharedConstants, samplerLodBiases) == 800);
+static_assert(offsetof(SharedConstants, vertexSamplerLodBiases) == 864);
 
 // memory stays valid until ResetFrame().
 struct ConstantAllocation {
