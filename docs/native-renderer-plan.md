@@ -23,7 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
-| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu). See Phase 7. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu). See Phase 7. |
 
 ## What we know about PGR4
 
@@ -930,7 +930,8 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    perturbed coordinates). The bonnet's reflection is not it: the bonnet
    is identical either way.
    That chain (the 7e3 surface, its depth and its float resolves) now
-   renders at `pgr4_reflection_scale`, 1 to 3 times 320x180 (default 3),
+   renders at `pgr4_reflection_scale`, 1 to 3 times 320x180 (default 1
+   since Phase 7, before that 3),
    never above the resolution scale, so 1x runs are unchanged. GPU at 3x,
    chase camera: 9.7 ms a frame before, 8.9 ms after. The three passes
    cost 0.64 ms at 960x540 against 0.75 ms at 320x180, which had paid for a
@@ -1367,8 +1368,8 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 
 ### Phase 7: User-facing polish
 
-Three items for players rather than for bring-up. None changes what a frame
-looks like at the defaults.
+Three items for players rather than for bring-up. Only the menu's console
+defaults change what a frame looks like at the defaults.
 
 1. **Renderer diagnostics at the debug level.** The SDK's default
    `log_level` is `info`, and the renderer logs much of its bring-up
@@ -1480,6 +1481,16 @@ looks like at the defaults.
      - **Live options.** Fullscreen, the frame rate limit, vsync, FXAA,
        anisotropy and display correction are read per frame or per sampler,
        so they apply live.
+     - **Console defaults** (2026-10-25). The menu's resolution and image
+       quality options now default to the console's values.
+       `pgr4_resolution_scale` goes from 0 (auto, from the output height) to
+       1 (720p), and `pgr4_reflection_scale` from 3 to 1 (320x180). The
+       other entries already matched the console: vsync, MSAA and display
+       correction on, FXAA and supersampling off, anisotropy `default`,
+       shadow 1x and bumper height 0. Two stay above the console on
+       purpose: `pgr4_fps_limit` 60 (the console ran at 30) and
+       `pgr4_output_16bit` on (the console's back buffer is 8 bits). A
+       `pgr4.toml` that sets either scale keeps its value.
 3. **The bumper camera's height.** The bumper view sits too low in game.
    Find what sets it, then add an offset cvar.
    - **What is known:** camera placement is data, not code constants. The

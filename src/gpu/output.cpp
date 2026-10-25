@@ -23,7 +23,7 @@
 #include "gpu/device.h"
 #include "gpu/settings.h"
 
-REXCVAR_DEFINE_INT32(pgr4_resolution_scale, 0, kCvarGroup,
+REXCVAR_DEFINE_INT32(pgr4_resolution_scale, 1, kCvarGroup,
                      "Integer render resolution scale over the guest's 1280x720 "
                      "(0 = from the output height, 1 = native). Takes effect "
                      "after a restart.")
@@ -34,7 +34,7 @@ REXCVAR_DEFINE_INT32(pgr4_shadow_scale, 1, kCvarGroup,
                      "up to 4). Takes effect after a restart.")
     .range(1, 4)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_INT32(pgr4_reflection_scale, 3, kCvarGroup,
+REXCVAR_DEFINE_INT32(pgr4_reflection_scale, 1, kCvarGroup,
                      "Road reflection view resolution, as a multiple of the "
                      "console's 320x180 (1 = native, up to 3), never above the "
                      "render resolution scale. Takes effect after a restart.")

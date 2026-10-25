@@ -185,7 +185,7 @@ void SettingsOverlay::OnDraw(ImGuiIO & /*io*/) {
   Section("Resolution");
   Combo("Resolution scale", "pgr4_resolution_scale",
         {{"Auto (window size)", "0"},
-         {"1x (720p)", "1"},
+         {"1x (720p, console)", "1"},
          {"2x (1440p)", "2"},
          {"3x (2160p)", "3"},
          {"4x (2880p)", "4"}});
