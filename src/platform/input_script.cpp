@@ -110,6 +110,7 @@ struct Press {
   u16 buttons = 0;
   u8 left_trigger = 0;
   u8 right_trigger = 0;
+  i16 thumb_lx = 0;
   double start = 0; // frames, or seconds when 'seconds'
   double hold = 6;
   bool seconds = false;
@@ -192,6 +193,10 @@ bool ParseButton(const std::string &name, Press &p) {
   }
   if (name == "rt") {
     p.right_trigger = 255;
+    return true;
+  }
+  if (name == "lsleft" || name == "lsright") {
+    p.thumb_lx = name == "lsleft" ? -32767 : 32767;
     return true;
   }
   if (name == "dump" || name == "trace") {
@@ -331,6 +336,7 @@ REX_HOOK_RAW(XInputGetState) {
   static std::vector<bool> logged(script.size());
   u16 buttons = 0;
   u8 lt = 0, rt = 0;
+  i16 lx = 0;
   for (size_t i = 0; i < script.size(); ++i) {
     const Press &p = script[i];
     const Segment &s = segments[p.segment];
@@ -368,10 +374,14 @@ REX_HOOK_RAW(XInputGetState) {
       buttons |= p.buttons;
       lt = std::max(lt, p.left_trigger);
       rt = std::max(rt, p.right_trigger);
+      if (p.thumb_lx)
+        lx = p.thumb_lx;
     }
   }
-  if (!buttons && !lt && !rt)
+  if (!buttons && !lt && !rt && !lx)
     return;
+  if (lx)
+    state->sThumbLX = lx;
   state->wButtons = u16(state->wButtons) | buttons;
   state->bLeftTrigger = std::max<u8>(state->bLeftTrigger, lt);
   state->bRightTrigger = std::max<u8>(state->bRightTrigger, rt);
