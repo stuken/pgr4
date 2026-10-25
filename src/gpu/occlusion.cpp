@@ -35,12 +35,13 @@ constexpr u32 kQueries = 1024;
 
 // The Radeon 8060S driver (32.0.32015.7029) resolves occlusion queries
 // without writing anything; timestamps and pipeline statistics resolve
-// fine. So each draw also counts its pixel shader invocations, and a
-// result still holding kUnwritten reads that instead. Early depth rejects
-// failing pixels before the shader there, discard or not, so the count is
-// the pixels that passed (not samples, which neither reader minds). The
-// driver skips the shader of a draw with every colour write off, so such a
-// counted draw writes through a blend that keeps the target (KeepPixelShader).
+// fine. So each counted draw also counts its pixel shader invocations, and a
+// result still holding kUnwritten reads that instead. The counted draw is a
+// copy of the guest's with occlusion_count_ps ([earlydepthstencil]), so only
+// pixels that pass the depth test run it (not samples, which neither reader
+// minds). The guest's own pixel shader would not do: the light probes
+// discard, and the driver then runs it for every covered pixel before the
+// depth test, so occluded probes counted their whole quad.
 constexpr u64 kUnwritten = ~0ull;
 constexpr u64 kStatsOffset = sizeof(u64) * kQueries;
 
@@ -148,13 +149,17 @@ void Issue(u32 query, bool begin, bool end) {
   }
 }
 
-void DrawBegin(VideoState &s) {
+bool DrawBegin(VideoState &s) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (!g_counting || !s.command_list)
-    return;
+    return false;
   Slot &slot = Recording(s);
   if (!slot.recording || slot.used >= kQueries)
-    return;
+    return false;
+  // Uncounted (0 samples) with no colour target to keep the shader running.
+  if (s.pipelineState.renderTargetFormat == plume::RenderFormat::UNKNOWN ||
+      !Video::BindOcclusionCountPipelineLocked())
+    return false;
   const u32 index = slot.used++;
   // Each guest query's host queries are consecutive: nothing else begins one
   // while it counts.
@@ -164,26 +169,7 @@ void DrawBegin(VideoState &s) {
   g_in_draw = true;
   List(s)->BeginQuery(slot.heap, D3D12_QUERY_TYPE_OCCLUSION, index);
   List(s)->BeginQuery(slot.stats, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, index);
-}
-
-void KeepPixelShader(VideoState &s) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  PipelineState &ps = s.pipelineState;
-  if (!g_unwritten || !g_counting || ps.colorWriteEnable ||
-      ps.colorWriteEnable1 ||
-      ps.renderTargetFormat == plume::RenderFormat::UNKNOWN)
-    return;
-  // ZERO/ONE keeps the target exactly, Inf and NaN outputs included.
-  bool &dirty = s.dirtyStates.pipelineState;
-  Video::SetDirtyValue(dirty, ps.colorWriteEnable, u32(0xF));
-  Video::SetDirtyValue(dirty, ps.alphaBlendEnable, true);
-  Video::SetDirtyValue(dirty, ps.srcBlend, plume::RenderBlend::ZERO);
-  Video::SetDirtyValue(dirty, ps.destBlend, plume::RenderBlend::ONE);
-  Video::SetDirtyValue(dirty, ps.blendOp, plume::RenderBlendOperation::ADD);
-  Video::SetDirtyValue(dirty, ps.srcBlendAlpha, plume::RenderBlend::ZERO);
-  Video::SetDirtyValue(dirty, ps.destBlendAlpha, plume::RenderBlend::ONE);
-  Video::SetDirtyValue(dirty, ps.blendOpAlpha,
-                       plume::RenderBlendOperation::ADD);
+  return true;
 }
 
 void DrawEnd(VideoState &s) {
@@ -294,8 +280,7 @@ namespace pgr4::gpu::occlusion {
 
 bool Enabled() { return false; }
 void Issue(u32, bool, bool) {}
-void DrawBegin(VideoState &) {}
-void KeepPixelShader(VideoState &) {}
+bool DrawBegin(VideoState &) { return false; }
 void DrawEnd(VideoState &) {}
 void FrameBegin(VideoState &) {}
 void FrameEnd(VideoState &) {}

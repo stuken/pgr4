@@ -257,6 +257,10 @@ public:
   static bool FlushRenderState(u32 device_guest);
   // Same, but the caller holds state().mutex.
   static bool FlushRenderStateLocked(u32 device_guest);
+  // After a flushed draw, binds the variant of its pipeline that counts it
+  // for an occlusion query (gpu/occlusion.h); the next flush binds the
+  // guest's again. False if that pipeline could not be built.
+  static bool BindOcclusionCountPipelineLocked();
 };
 
 // plume's createBuffer/createTexture hand back a non-null wrapper around a null

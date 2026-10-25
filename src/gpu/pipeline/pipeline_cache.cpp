@@ -179,6 +179,8 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineState &state) {
       return nullptr;
     if (state.debugSolid)
       ps = gpu::state().debug_solid_ps.get();
+    if (state.occlusionCounting)
+      ps = gpu::state().occlusion_count_ps.get();
   }
 
   plume::RenderGraphicsPipelineDesc desc;

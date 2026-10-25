@@ -999,8 +999,9 @@ only passes, so Total reads as ZPass. The one ratio reader (`sub_826A12A8`,
 1 - ZPass/Total, a per-view probe) sees all or nothing. Counts are host
 samples, so they grow with the scale squared. Both readers only compare
 against zero or against Total, so that is harmless.
-`pgr4_occlusion_queries` (on) turns the new path off. The rr6 sun counter
-(`occlusion_count_ps`, `occlusion_counting`) is still unused.
+`pgr4_occlusion_queries` (on) turns the new path off. The rr6 sun counter's
+UAV (`occlusion_counting`, root descriptor 3) is still unused; its shader is
+now the counting shader below.
 
 **The driver never writes the occlusion results (fixed: pixel shader
 counts).** The first version of this read garbage in one frame slot (a
@@ -1022,7 +1023,8 @@ still holding it reads the draw's pixel shader invocations instead (logged
 once). The test shows that count works as a stand-in:
 
 - early depth rejects failing pixels before the shader, with `discard` in
-  the shader too, so the count is the pixels that pass;
+  the test's shader too, so the count is the pixels that pass (not so for
+  the game's light probes; see below);
 - the driver skips the shader of a draw with every colour write off, so a
   counted draw like that (the probe) writes through a ZERO/ONE blend. The
   test shows that blend keeps the target exactly, +Inf, NaN and -Inf outputs
@@ -1034,6 +1036,36 @@ screen (921600 at 1x), and the grid's lights in the St Petersburg day race
 come and go as the cars move. The tail-light query quad is only 2 pixels.
 In one captured frame it sat about 2 mm behind the lamp's depth, and it
 passes in some frames and not others.
+
+**Glows still showing through geometry (fixed: a counting copy of each
+query draw).** In the Pushkin's Places intro (St Petersburg, fog), the
+cockpit shot showed a car's tail-light glow on the A-pillar, and in races
+CPU cars' glows showed through barriers. The answers were wrong, not the
+path: nearly every light query read 2 to 8 pixels. A capture of the cockpit
+frame shows all 14 light probes (3x2-pixel quads, GreaterEqual, additive,
+RGB writes) pass 0 pixels against the depth buffer, the A-pillar's two
+included. The probe pixel shader discards (alpha test), and on this driver
+that puts the draw on late depth: the shader runs for every covered pixel,
+so `PSInvocations` counted the whole quad. The standalone test's `discard`
+shader kept early depth, so it did not show this. The four view probes
+(`sub_826A12A8`, no discard) counted right.
+
+So the counted draw is no longer the guest's. The guest draw records as
+usual, outside any host query. Then `DrawCounted` (hooks/draw.cpp) records
+the same host draws again through `Video::BindOcclusionCountPipelineLocked`:
+the guest's pipeline with `occlusion_count_ps` (`[earlydepthstencil]`,
+returns 0) in place of its pixel shader, depth and stencil writes off, and
+a ZERO/ONE blend over a full colour write so the driver runs the shader.
+The host queries go around that copy only. The copy's invocations are the
+pixels that pass depth and stencil, whatever the guest shader discards, and
+it changes nothing on screen. The cockpit glow is gone; the grid's visible
+tail lights still read 1 to 7.
+
+The two light query sets alternate frames: the main view's (issued from
+0x82341FD0, viewport 0) and the road reflection's (0x82341D20, viewport 1,
+a 320x180 4xMSAA pass from a camera mirrored below the road, the road
+itself not drawn). Each is answered the next frame and read the frame
+after.
 
 D3D12 only. On Vulkan no query ever becomes available on this machine's
 driver (Radeon 8060S, Vulkan 1.4.359), not even an empty

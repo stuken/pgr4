@@ -1,15 +1,10 @@
-// Lens-flare sun-visibility counter (128x128 quad). [earlydepthstencil] counts only
-// depth-passing fragments, so the atomic == visible sun pixels (0..16384).
-// D3D12: root UAV u0/space5. Vulkan: main-layout descriptor set 4 (device.h note).
-#ifdef __spirv__
-[[vk::binding(0, 4)]]
-#endif
-RWByteAddressBuffer g_OcclusionCounter : register(u0, space5);
-
+// Occlusion query count draws (gpu/occlusion.cpp): swapped in for the guest
+// pixel shader of a counted draw's copy. [earlydepthstencil] runs it only for
+// pixels that pass the depth and stencil tests, so its invocations are the
+// passing pixels whatever the guest shader would discard. The pipeline keeps
+// the target (ZERO/ONE), so the output is never seen.
 [earlydepthstencil]
 float4 main(float4 pos : SV_Position) : SV_Target
 {
-    uint old;
-    g_OcclusionCounter.InterlockedAdd(0, 1u, old);
     return float4(0.0, 0.0, 0.0, 0.0);
 }

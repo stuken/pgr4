@@ -236,6 +236,43 @@ bool Video::FlushRenderState(u32 device_guest) {
   return FlushRenderStateLocked(device_guest);
 }
 
+bool Video::BindOcclusionCountPipelineLocked() {
+  auto &s = state();
+  if (!s.command_list)
+    return false;
+  // The guest's draw with occlusion_count_ps in place of its pixel shader,
+  // which runs only for pixels that pass the depth (and stencil) test. It
+  // changes nothing: depth and stencil keep their values and ZERO/ONE keeps
+  // the target, whose colour write stops the driver skipping the shader.
+  PipelineState lookup = s.pipelineState;
+  lookup.pixelShader = nullptr;
+  lookup.occlusionCounting = true;
+  lookup.debugSolid = false;
+  lookup.zWriteEnable = false;
+  lookup.stencilWriteMask = 0;
+  lookup.enableAlphaToCoverage = false;
+  lookup.colorWriteEnable = 0xF;
+  lookup.colorWriteEnable1 = 0;
+  lookup.alphaBlendEnable = true;
+  lookup.srcBlend = plume::RenderBlend::ZERO;
+  lookup.destBlend = plume::RenderBlend::ONE;
+  lookup.blendOp = plume::RenderBlendOperation::ADD;
+  lookup.srcBlendAlpha = plume::RenderBlend::ZERO;
+  lookup.destBlendAlpha = plume::RenderBlend::ONE;
+  lookup.blendOpAlpha = plume::RenderBlendOperation::ADD;
+  SanitizePipelineState(lookup);
+  bool built = false;
+  auto *pso = GetOrCreatePipeline(lookup, &built);
+  if (!pso)
+    return false;
+  RecordPipelineState(lookup, CurrentRenderPassId(), built);
+  s.command_list->setPipeline(pso);
+  s.current_pso = pso;
+  s.dirtyStates.pipelineState = true;
+  s.dirtyStates.depthBias = true;
+  return true;
+}
+
 bool Video::FlushRenderStateLocked(u32 device_guest) {
   auto &s = state();
   // A confirmed device-removed event is terminal: stop recording so the render
@@ -280,7 +317,6 @@ bool Video::FlushRenderStateLocked(u32 device_guest) {
   // alpha enable bit, from the register shadows RR6's render-state setters
   // write.
   ReadDeviceRenderState(s, device_guest);
-  occlusion::KeepPixelShader(s);
   // BindDrawFramebufferLocked has already flushed; pick up a guest viewport.
   FlushViewport();
 

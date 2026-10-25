@@ -88,24 +88,20 @@ using pgr4::gpu::Video;
 using pgr4::gpu::D3DIndexBuffer;
 using pgr4::gpu::D3DVertexBuffer;
 
-// One guest draw's host draws, counted by the occlusion query open around
-// them, if any. Ended before anything else the draw records.
-class OcclusionScope {
-public:
-  explicit OcclusionScope(pgr4::gpu::VideoState &s) : s_(s) {
-    pgr4::gpu::occlusion::DrawBegin(s_);
+// Records one guest draw's host draws through emit(counting), and while an
+// occlusion query is open records them again through the counting pipeline,
+// inside a host query of their own (gpu/occlusion.h). emit returns false
+// when the draw cannot be recorded at all.
+template <typename Emit>
+bool DrawCounted(pgr4::gpu::VideoState &s, Emit &&emit) {
+  if (!emit(false))
+    return false;
+  if (pgr4::gpu::occlusion::DrawBegin(s)) {
+    emit(true);
+    pgr4::gpu::occlusion::DrawEnd(s);
   }
-  ~OcclusionScope() { End(); }
-  void End() {
-    if (open_)
-      pgr4::gpu::occlusion::DrawEnd(s_);
-    open_ = false;
-  }
-
-private:
-  pgr4::gpu::VideoState &s_;
-  bool open_ = true;
-};
+  return true;
+}
 
 // Draw counters, reported by LogDrawStats from the Present hook.
 struct DrawStats {
@@ -649,76 +645,79 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs &args) {
   auto *cmd_list = s.command_list;
   if (!cmd_list)
     return;
-  OcclusionScope occlusion(s);
-
-  if (static_cast<xe::PrimitiveType>(primitive_type) ==
-      xe::PrimitiveType::kQuadList) {
-    u32 quads = args.vertexOrIndexCount / 4;
-    quads = std::min(quads, Video::QuadlistMaxQuads());
-    const auto *ib = Video::QuadlistExpansionIBView();
-    if (args.indexed) {
-      // An indexed quad list (the nitrous radial blur's grid) names its own
-      // corners, so split the guest's quads rather than consecutive vertices.
-      if (DrawIndexedQuadList(*dev, args, quads))
-        s.dirtyStates.indices = true;
-    } else if (quads && ib) {
-      const i32 first = args.indexed ? args.baseVertexIndex
-                                     : static_cast<i32>(args.startVertex);
-      cmd_list->setIndexBuffer(ib);
-      cmd_list->drawIndexedInstanced(quads * 6, 1, 0, first, 0);
-      s.dirtyStates.indices = true;
-    }
-  } else if (static_cast<xe::PrimitiveType>(primitive_type) ==
-                 xe::PrimitiveType::kTriangleFan &&
-             !args.indexed) {
-    const u32 tris = std::min(args.vertexOrIndexCount >= 3
-                                  ? args.vertexOrIndexCount - 2
-                                  : 0u,
-                              Video::FanMaxTriangles());
-    if (const auto *ib = Video::FanExpansionIBView(); tris && ib) {
-      cmd_list->setIndexBuffer(ib);
-      cmd_list->drawIndexedInstanced(tris * 3, 1, 0,
-                                     static_cast<i32>(args.startVertex), 0);
-      s.dirtyStates.indices = true;
-    }
-  } else if (args.indexed) {
+  const bool drawn = DrawCounted(s, [&](bool counting) {
     if (static_cast<xe::PrimitiveType>(primitive_type) ==
-        xe::PrimitiveType::kTriangleFan) {
-      static std::atomic<u32> s_warn{0};
-      if (s_warn.fetch_add(1, std::memory_order_relaxed) < 4)
-        PGR4_WARN("indexed triangle fan drawn as a triangle list");
-    }
-    if (s.index_view.buffer.ref == nullptr) {
-      g_stats.no_index_buffer.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-    cmd_list->drawIndexedInstanced(args.vertexOrIndexCount, 1, args.startIndex,
-                                   args.baseVertexIndex, 0);
-  } else if (static_cast<xe::PrimitiveType>(primitive_type) ==
-                 xe::PrimitiveType::kPointList &&
-             pgr4::gpu::TargetScaleLocked(s) > 1) {
-    // A one-pixel guest point covers scale x scale host pixels. Host points
-    // are one pixel, so draw the list once per host pixel of the block, each
-    // pass moved onto that pixel's centre. RR6's only point draw is the sun
-    // visibility count: 64 additive points summing the probe into one pixel
-    // that the glow reads back bilinearly, so every host pixel of the block
-    // needs the full sum.
-    const u32 scale = pgr4::gpu::TargetScaleLocked(s);
-    const float centre = 0.5f * float(scale) - 0.5f;
-    for (u32 y = 0; y < scale; ++y) {
-      for (u32 x = 0; x < scale; ++x) {
-        pgr4::gpu::SetHostPixelNudge(float(x) - centre, float(y) - centre);
-        if (!Video::FlushRenderStateLocked(device_guest))
-          break;
-        cmd_list->drawInstanced(args.vertexOrIndexCount, 1, args.startVertex,
-                                0);
+        xe::PrimitiveType::kQuadList) {
+      u32 quads = args.vertexOrIndexCount / 4;
+      quads = std::min(quads, Video::QuadlistMaxQuads());
+      const auto *ib = Video::QuadlistExpansionIBView();
+      if (args.indexed) {
+        // An indexed quad list (the nitrous radial blur's grid) names its
+        // own corners, so split the guest's quads rather than consecutive
+        // vertices.
+        if (DrawIndexedQuadList(*dev, args, quads))
+          s.dirtyStates.indices = true;
+      } else if (quads && ib) {
+        const i32 first = args.indexed ? args.baseVertexIndex
+                                       : static_cast<i32>(args.startVertex);
+        cmd_list->setIndexBuffer(ib);
+        cmd_list->drawIndexedInstanced(quads * 6, 1, 0, first, 0);
+        s.dirtyStates.indices = true;
       }
+    } else if (static_cast<xe::PrimitiveType>(primitive_type) ==
+                   xe::PrimitiveType::kTriangleFan &&
+               !args.indexed) {
+      const u32 tris = std::min(args.vertexOrIndexCount >= 3
+                                    ? args.vertexOrIndexCount - 2
+                                    : 0u,
+                                Video::FanMaxTriangles());
+      if (const auto *ib = Video::FanExpansionIBView(); tris && ib) {
+        cmd_list->setIndexBuffer(ib);
+        cmd_list->drawIndexedInstanced(tris * 3, 1, 0,
+                                       static_cast<i32>(args.startVertex), 0);
+        s.dirtyStates.indices = true;
+      }
+    } else if (args.indexed) {
+      if (static_cast<xe::PrimitiveType>(primitive_type) ==
+          xe::PrimitiveType::kTriangleFan) {
+        static std::atomic<u32> s_warn{0};
+        if (s_warn.fetch_add(1, std::memory_order_relaxed) < 4)
+          PGR4_WARN("indexed triangle fan drawn as a triangle list");
+      }
+      if (s.index_view.buffer.ref == nullptr) {
+        g_stats.no_index_buffer.fetch_add(1, std::memory_order_relaxed);
+        return false;
+      }
+      cmd_list->drawIndexedInstanced(args.vertexOrIndexCount, 1,
+                                     args.startIndex, args.baseVertexIndex, 0);
+    } else if (static_cast<xe::PrimitiveType>(primitive_type) ==
+                   xe::PrimitiveType::kPointList &&
+               pgr4::gpu::TargetScaleLocked(s) > 1 && !counting) {
+      // A one-pixel guest point covers scale x scale host pixels. Host
+      // points are one pixel, so draw the list once per host pixel of the
+      // block, each pass moved onto that pixel's centre. RR6's only point
+      // draw is the sun visibility count: 64 additive points summing the
+      // probe into one pixel that the glow reads back bilinearly, so every
+      // host pixel of the block needs the full sum. Counted once.
+      const u32 scale = pgr4::gpu::TargetScaleLocked(s);
+      const float centre = 0.5f * float(scale) - 0.5f;
+      for (u32 y = 0; y < scale; ++y) {
+        for (u32 x = 0; x < scale; ++x) {
+          pgr4::gpu::SetHostPixelNudge(float(x) - centre, float(y) - centre);
+          if (!Video::FlushRenderStateLocked(device_guest))
+            break;
+          cmd_list->drawInstanced(args.vertexOrIndexCount, 1,
+                                  args.startVertex, 0);
+        }
+      }
+      pgr4::gpu::SetHostPixelNudge(0.0f, 0.0f);
+    } else {
+      cmd_list->drawInstanced(args.vertexOrIndexCount, 1, args.startVertex, 0);
     }
-    pgr4::gpu::SetHostPixelNudge(0.0f, 0.0f);
-  } else {
-    cmd_list->drawInstanced(args.vertexOrIndexCount, 1, args.startVertex, 0);
-  }
-  occlusion.End();
+    return true;
+  });
+  if (!drawn)
+    return;
   g_stats.recorded.fetch_add(1, std::memory_order_relaxed);
   CountRenderTarget();
   pgr4::gpu::FxaaAfterCompositeLocked(s);
@@ -949,28 +948,30 @@ void FlushPendingUP() {
   }
   g_stats.recorded.fetch_add(1, std::memory_order_relaxed);
   CountRenderTarget();
-  OcclusionScope occlusion(s);
-  if (static_cast<xe::PrimitiveType>(p.primitive_type) ==
-      xe::PrimitiveType::kQuadList) {
-    const u32 quads = std::min(p.vertex_count / 4, Video::QuadlistMaxQuads());
-    if (const auto *ib = Video::QuadlistExpansionIBView(); quads && ib) {
-      s.command_list->setIndexBuffer(ib);
-      s.command_list->drawIndexedInstanced(quads * 6, 1, 0, 0, 0);
-      s.dirtyStates.indices = true;
+  DrawCounted(s, [&](bool) {
+    if (static_cast<xe::PrimitiveType>(p.primitive_type) ==
+        xe::PrimitiveType::kQuadList) {
+      const u32 quads =
+          std::min(p.vertex_count / 4, Video::QuadlistMaxQuads());
+      if (const auto *ib = Video::QuadlistExpansionIBView(); quads && ib) {
+        s.command_list->setIndexBuffer(ib);
+        s.command_list->drawIndexedInstanced(quads * 6, 1, 0, 0, 0);
+        s.dirtyStates.indices = true;
+      }
+    } else if (static_cast<xe::PrimitiveType>(p.primitive_type) ==
+               xe::PrimitiveType::kTriangleFan) {
+      const u32 tris = std::min(p.vertex_count >= 3 ? p.vertex_count - 2 : 0u,
+                                Video::FanMaxTriangles());
+      if (const auto *ib = Video::FanExpansionIBView(); tris && ib) {
+        s.command_list->setIndexBuffer(ib);
+        s.command_list->drawIndexedInstanced(tris * 3, 1, 0, 0, 0);
+        s.dirtyStates.indices = true;
+      }
+    } else {
+      s.command_list->drawInstanced(p.vertex_count, 1, 0, 0);
     }
-  } else if (static_cast<xe::PrimitiveType>(p.primitive_type) ==
-             xe::PrimitiveType::kTriangleFan) {
-    const u32 tris = std::min(p.vertex_count >= 3 ? p.vertex_count - 2 : 0u,
-                              Video::FanMaxTriangles());
-    if (const auto *ib = Video::FanExpansionIBView(); tris && ib) {
-      s.command_list->setIndexBuffer(ib);
-      s.command_list->drawIndexedInstanced(tris * 3, 1, 0, 0, 0);
-      s.dirtyStates.indices = true;
-    }
-  } else {
-    s.command_list->drawInstanced(p.vertex_count, 1, 0, 0);
-  }
-  occlusion.End();
+    return true;
+  });
   pgr4::gpu::FxaaAfterCompositeLocked(s);
 }
 

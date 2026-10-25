@@ -1,9 +1,10 @@
 // pgr4 - ReXGlue Recompiled Project
 //
 // Guest occlusion queries on host occlusion queries. The guest brackets its
-// test draws with D3DQuery_Issue BEGIN and END; every host draw recorded in
-// between gets a host query of its own (so no query spans a render pass on
-// Vulkan), and the guest query's count is their sum. A frame slot's queries
+// test draws with D3DQuery_Issue BEGIN and END; every draw in between is
+// drawn again, invisibly, to be counted (see occlusion.cpp), and each of
+// those copies gets a host query of its own (so no query spans a render pass
+// on Vulkan). The guest query's count is their sum. A frame slot's queries
 // are resolved at the end of its list and read after its fence, so a result
 // arrives a frame or two after the issue and GetData answers "not yet" until
 // then, as on the 360. D3D12 only for now: on Vulkan every query still
@@ -29,13 +30,11 @@ bool Enabled();
 // follow for 'query', END stops.
 void Issue(u32 query, bool begin, bool end);
 
-// Around one guest draw's host draws, under the video state mutex.
-void DrawBegin(VideoState &s);
+// After a guest draw's host draws, under the video state mutex: true if the
+// draw is counted, with the counting pipeline bound and a host query open.
+// The caller then records the same host draws again and calls DrawEnd.
+bool DrawBegin(VideoState &s);
 void DrawEnd(VideoState &s);
-// After the guest render state is read, before the pipeline is bound: makes
-// a draw that will be counted run its pixel shader when only the shader's
-// invocations can count it (see occlusion.cpp).
-void KeepPixelShader(VideoState &s);
 
 // The recording slot's list has just begun / is about to end.
 void FrameBegin(VideoState &s);
