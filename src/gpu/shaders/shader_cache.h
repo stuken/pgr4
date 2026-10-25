@@ -21,6 +21,9 @@ struct ShaderCacheEntry {
   const uint32_t spirvOffset;
   const uint32_t spirvSize;
   const uint32_t specConstantsMask;
+  // The texture slots the shader fetches through: bit n is pixel sampler n,
+  // bit 16 + n vertex sampler n (VideoState::textures' indices).
+  const uint32_t samplerSlotMask;
   // Filled in at runtime by the renderer when the guest creates the shader.
   pgr4::gpu::GuestShader *guestShader;
 };

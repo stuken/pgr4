@@ -17,8 +17,15 @@
 
 #include <plume_render_interface.h>
 
+#include <rex/cvar.h>
+
+#include "core/settings.h"
 #include "gpu/shaders/shader_constants.h"
 #include "gpu/output.h"
+
+REXCVAR_DEFINE_BOOL(pgr4_declared_streams_only, true, kCvarGroup,
+                    "Performance experiment: mirror and bind only the vertex "
+                    "streams the draw's declaration reads");
 
 namespace pgr4::gpu {
 
@@ -165,12 +172,24 @@ void Video::SetVertexStream(u32 slot, plume::RenderBufferReference buffer,
   SetVertexStreamLocked(s, slot, buffer, size, stride);
 }
 
-void Video::SetVertexStreams(const VertexStream (&streams)[16]) {
+void Video::SetVertexStreams(const VertexStream (&streams)[16], u32 mask) {
   auto &s = state();
   std::lock_guard lock(s.mutex);
   for (u32 i = 0; i < 16; ++i)
-    SetVertexStreamLocked(s, i, streams[i].buffer, streams[i].size,
-                          streams[i].stride);
+    if (mask >> i & 1u)
+      SetVertexStreamLocked(s, i, streams[i].buffer, streams[i].size,
+                            streams[i].stride);
+}
+
+u32 Video::DeclaredStreamMask() {
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  const GuestVertexDeclaration *decl = s.vertex_declaration;
+  if (!decl || !REXCVAR_GET(pgr4_declared_streams_only))
+    return 0xFFFFu;
+  // Slot 15 also feeds the elements a declaration omits (vertex_declaration
+  // .cpp), so it is set from the device as before.
+  return decl->streamMask | 0x8000u;
 }
 
 void Video::MarkVSConstantsDirty() {

@@ -168,6 +168,9 @@ plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
 // Most draws bind what the draw before them did in most slots. A slot whose
 // texture, fetch constant, frame and mirror generation all match the last
 // draw's still holds the right binding, so it skips the lookup and the bind.
+// A slot the bound shaders do not fetch is left as it is: its texture is not
+// mirrored or hashed until a draw reads it. Its last entry still describes
+// what VideoState holds there, so the skip above stays sound.
 void BindGuestTextures(const D3DDevice &dev) {
   struct Slot {
     u32 va = 0;
@@ -183,9 +186,10 @@ void BindGuestTextures(const D3DDevice &dev) {
   pgr4::gpu::GuestTexture *textures[pgr4::gpu::kHostSamplerSlots] = {};
   u32 resolved = 0, unresolved = 0;
   bool any = false;
+  const u32 sampled = Video::SampledSlotMask();
   for (u32 i = 0; i < pgr4::gpu::kHostSamplerSlots; ++i) {
     const u32 tex_va = dev.textures[i];
-    if (!tex_va)
+    if (!tex_va || !(sampled >> i & 1u))
       continue;
     u32 fetch[6];
     for (u32 k = 0; k < 6; ++k)
@@ -210,7 +214,10 @@ void BindGuestTextures(const D3DDevice &dev) {
     Video::SetTextures(textures);
 }
 
+// Only LogDrawStats reads the counts, and only under pgr4_devmode.
 void CountRenderTarget() {
+  if (!pgr4::Settings::Get().Devmode())
+    return;
   auto &s = pgr4::gpu::state();
   std::lock_guard rt_lock(g_stats.rt_mutex);
   const u64 key = s.render_target ? (u64(s.render_target->width) << 32 |
@@ -345,10 +352,15 @@ void TracePixelConstants(const D3DDevice &dev) {
   PGR4_INFO("[trace]   ps consts{}", consts);
 }
 
-// Binds host mirrors of the device's vertex streams and index buffer.
+// Binds host mirrors of the device's vertex streams and index buffer. A stream
+// the declaration does not read keeps its last binding unmirrored; the PSO key
+// ignores its stride (SanitizePipelineState).
 void BindGuestGeometry(const D3DDevice &dev, bool indexed) {
   Video::VertexStream streams[16];
+  const u32 declared = Video::DeclaredStreamMask();
   for (u32 i = 0; i < 16; ++i) {
+    if (!(declared >> i & 1u))
+      continue;
     const u32 vb_va = dev.streams[i];
     streams[i].stride = u32(dev.streamStrides[i]) * 4;
     const auto *vb = pgr4::mem::at<const D3DVertexBuffer>(vb_va);
@@ -365,7 +377,7 @@ void BindGuestGeometry(const D3DDevice &dev, bool indexed) {
     streams[i].buffer = mirror->bufferRef(offset);
     streams[i].size = size - offset;
   }
-  Video::SetVertexStreams(streams);
+  Video::SetVertexStreams(streams, declared);
   BindGuestTextures(dev);
   if (!indexed)
     return;

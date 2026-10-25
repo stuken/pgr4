@@ -36,13 +36,16 @@ REXCVAR_DEFINE_BOOL(pgr4_fxaa, false, kCvarGroup,
 REXCVAR_DEFINE_BOOL(pgr4_scaled_post_filters, true, kCvarGroup,
                     "At a resolution scale, fit the race resolve's taps to a "
                     "host pixel and upscale the glow smoothly");
-// Off by default: an aliased destination is never written itself, and PGR3's
-// crowd impostor atlas (resolved once while a course loads) came back as
-// stale video memory once its 512x192 source surface moved on.
 REXCVAR_DEFINE_BOOL(pgr4_scale_copy_cache, true, kCvarGroup,
                     "Performance experiment: reuse a texture's guest scale "
                     "copy until the texture is written again, instead of "
                     "copying it for every draw");
+REXCVAR_DEFINE_BOOL(pgr4_sampled_slots_only, true, kCvarGroup,
+                    "Performance experiment: bind, copy and describe only the "
+                    "texture slots the draw's shaders fetch through");
+// Off by default: an aliased destination is never written itself, and PGR3's
+// crowd impostor atlas (resolved once while a course loads) came back as
+// stale video memory once its 512x192 source surface moved on.
 REXCVAR_DEFINE_BOOL(pgr4_resolve_alias, false, kCvarGroup,
                     "Let a same-size, same-format resolve alias its source "
                     "surface instead of copying it");
@@ -175,15 +178,6 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
 
   s.draw_framebuffer_bound = false;
 
-  // A multisampled colour source resolves to one sample first. A depth one
-  // takes resolve_msaa_ps's sample-0 path below.
-  if (src->sampleCount != plume::RenderSampleCount::COUNT_1 &&
-      !IsDepthFormat(src->format)) {
-    src = ResolvedSingleSampleLocked(s, src);
-    if (!src)
-      return false;
-  }
-
   const bool dims_match =
       src->width == dst->width && src->height == dst->height;
   const bool format_match = src->format == dst->format;
@@ -191,6 +185,37 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
   const bool needs_scale = (resolve_scale != 1.0f);
   const bool dst_is_cube =
       dst->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE;
+
+  // A multisampled colour source resolves to one sample first: straight into
+  // a destination of its own size and format (the scene resolves), else into
+  // a scratch texture the paths below copy from. A depth one takes
+  // resolve_msaa_ps's sample-0 path below.
+  const bool msaa_color = src->sampleCount != plume::RenderSampleCount::COUNT_1 &&
+                          !IsDepthFormat(src->format);
+  if (msaa_color && dims_match && format_match && !needs_scale && !dst_is_cube &&
+      filter == CopyFilter::Default && dst->mipLevels <= 1) {
+    plume::RenderTextureBarrier pre[2] = {
+        plume::RenderTextureBarrier(src->texture,
+                                    plume::RenderTextureLayout::RESOLVE_SOURCE),
+        plume::RenderTextureBarrier(dst->texture,
+                                    plume::RenderTextureLayout::RESOLVE_DEST),
+    };
+    s.command_list->barriers(plume::RenderBarrierStage::COPY, pre, std::size(pre));
+    src->layout = plume::RenderTextureLayout::RESOLVE_SOURCE;
+    dst->layout = plume::RenderTextureLayout::RESOLVE_DEST;
+    s.command_list->resolveTexture(dst->texture, src->texture);
+    plume::RenderTextureBarrier post(dst->texture,
+                                     plume::RenderTextureLayout::SHADER_READ);
+    s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &post, 1);
+    dst->layout = plume::RenderTextureLayout::SHADER_READ;
+    NoteTextureWrite(dst);
+    return true;
+  }
+  if (msaa_color) {
+    src = ResolvedSingleSampleLocked(s, src);
+    if (!src)
+      return false;
+  }
 
   if (dims_match && format_match && !needs_scale &&
       filter == CopyFilter::Default &&
@@ -770,6 +795,28 @@ GuestTexture *SampledTextureLocked(const VideoState &s, GuestTexture *tex) {
   return tex;
 }
 
+// A null SetTexture leaves a slot's last texture bound (Video::SetTexture), so
+// most slots hold textures from earlier draws that this draw's shaders never
+// fetch. A shader without a cache entry keeps every slot of its stage.
+u32 SampledSlotMaskLocked(const VideoState &s) {
+  constexpr u32 kPixelSlots = (1u << kPixelSamplerSlots) - 1;
+  constexpr u32 kVertexSlots = ((1u << kHostSamplerSlots) - 1) & ~kPixelSlots;
+  if (!REXCVAR_GET(pgr4_sampled_slots_only))
+    return kPixelSlots | kVertexSlots;
+  auto stage = [](const GuestShader *gs, u32 all) -> u32 {
+    if (!gs)
+      return 0;
+    return gs->shaderCacheEntry ? gs->shaderCacheEntry->samplerSlotMask & all : all;
+  };
+  return stage(s.pixel_shader, kPixelSlots) | stage(s.vertex_shader, kVertexSlots);
+}
+
+u32 Video::SampledSlotMask() {
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  return SampledSlotMaskLocked(s);
+}
+
 namespace {
 
 // A render-target texture of `like`'s format at w x h, for a filtered copy.
@@ -828,10 +875,12 @@ std::unique_ptr<GuestTexture> CreateGuestScaleCopy(VideoState &s,
 //   composite's own 4x stretch is then the guest's.
 void BuildGuestScaleCopiesLocked(VideoState &s) {
   const u32 target_scale = TargetScaleLocked(s);
+  const u32 sampled = SampledSlotMaskLocked(s);
   for (u32 i = 0; i < 16; ++i) {
     s.sample_overrides[i] = nullptr;
     GuestTexture *tex = s.textures[i];
-    if (!tex || !tex->texture || tex->hostScale == target_scale)
+    if (!(sampled >> i & 1u) || !tex || !tex->texture ||
+        tex->hostScale == target_scale)
       continue;
     const bool down = tex->hostScale > target_scale;
     if ((!down && (!tex->reducedScale || !REXCVAR_GET(pgr4_scaled_post_filters))) ||

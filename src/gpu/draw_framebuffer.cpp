@@ -86,7 +86,9 @@ void TransitionResolveSources(VideoState &s, const GuestTexture *rt,
                               const GuestTexture *ds) {
   plume::RenderTextureBarrier sampled[std::size(decltype(s.textures){})];
   u32 sampled_count = 0;
-  for (GuestTexture *t : s.textures) {
+  const u32 mask = SampledSlotMaskLocked(s);
+  for (u32 i = 0; i < std::size(s.textures); ++i) {
+    GuestTexture *t = mask >> i & 1u ? s.textures[i] : nullptr;
     GuestTexture *src = t ? t->sourceSurface : nullptr;
     if (!src || src == t || !src->texture)
       continue;

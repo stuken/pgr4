@@ -33,6 +33,10 @@ REXCVAR_DECLARE(bool, pgr4_scaled_post_filters);
 REXCVAR_DEFINE_BOOL(pgr4_debug_no_vertex_base, false, kCvarGroup,
                     "Bring-up experiment: leave the draw's base vertex out of "
                     "r0.x (if SV_VertexID already includes it)");
+REXCVAR_DEFINE_BOOL(pgr4_constant_reuse, true, kCvarGroup,
+                    "Performance experiment: keep a draw's float constant "
+                    "upload bound when the guest block has not changed since "
+                    "the last draw");
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -82,8 +86,19 @@ struct SamplerSlotCache {
   bool valid = false;
 };
 
+// The guest bytes of the float constant block bound on this command list, so
+// a draw whose block is unchanged keeps the binding instead of uploading 4 KiB
+// again. The game writes its constants through unhooked code, so a compare is
+// the only dirty signal.
+struct ConstantBlockCache {
+  u8 guest[kConstantBlockBytes]{};
+  bool bound = false;
+};
+
 struct UploadState {
   FrameUpload frames[kNumFrames];
+  ConstantBlockCache vsBlock;
+  ConstantBlockCache psBlock;
   u32 cursor = 0;
   SharedConstants shared{};
   SharedConstants lastUploaded{};
@@ -259,7 +274,12 @@ void ResetFrame(u32 slot) {
   RecomputeShadowPcfScale(s);
 }
 
-void InvalidateSharedBinding() { upload_state().sharedBound = false; }
+void InvalidateSharedBinding() {
+  auto &s = upload_state();
+  s.sharedBound = false;
+  s.vsBlock.bound = false;
+  s.psBlock.bound = false;
+}
 
 // RR6 renders the race at 1440x800 and resolves it into the 1280x720 frame
 // with four bilinear taps (ps_82060208) in a rotated-grid pattern:
@@ -271,18 +291,19 @@ void InvalidateSharedBinding() { upload_state().sharedBound = false; }
 // guest gives the full-screen quad.
 // RR6's shader hash was 0x799300B9E6D4210B. PGR3's race resolve is not
 // identified yet, so this matches nothing until it is.
+// Returns whether it changed the block.
 constexpr u64 kRaceResolvePSHash = 0;
-void FitResolvePatternToHostPixel(u8 *block) {
+bool FitResolvePatternToHostPixel(u8 *block) {
   if (!REXCVAR_GET(pgr4_scaled_post_filters))
-    return;
+    return false;
   auto &vs = pgr4::gpu::state();
   auto *ps = vs.pipelineState.pixelShader;
   if (!ps || !ps->shaderCacheEntry ||
       ps->shaderCacheEntry->hash != kRaceResolvePSHash)
-    return;
+    return false;
   const u32 scale = pgr4::gpu::TargetScaleLocked(vs);
   if (scale <= 1)
-    return;
+    return false;
   // c0.xy, c0.zw, c1.xy, c1.zw: the four tap offsets.
   auto *taps = reinterpret_cast<float *>(block);
   for (u32 axis = 0; axis < 2; ++axis) {
@@ -295,19 +316,41 @@ void FitResolvePatternToHostPixel(u8 *block) {
       offset = centroid + (offset - centroid) / float(scale);
     }
   }
+  return true;
 }
+
+namespace {
+
+// Whether the block bound on this list still holds the guest's constants.
+bool BlockStillBound(const ConstantBlockCache &block, u32 guest_va) {
+  if (!block.bound || !REXCVAR_GET(pgr4_constant_reuse))
+    return false;
+  const auto *src = pgr4::mem::at<const u8>(guest_va);
+  return src && std::memcmp(block.guest, src, kConstantBlockBytes) == 0;
+}
+
+void NoteBlockBound(ConstantBlockCache &block, u32 guest_va) {
+  const auto *src = pgr4::mem::at<const u8>(guest_va);
+  block.bound = src != nullptr;
+  if (src)
+    std::memcpy(block.guest, src, kConstantBlockBytes);
+}
+
+} // namespace
 
 ConstantAllocation UploadVertexShaderConstants(u32 device_guest) {
   PGR4_CPU_ZONE("UploadVSConstants");
   auto &s = upload_state();
   if (!device_guest)
     return {};
+  const u32 guest_va = device_guest + offsetof(D3DDevice, vsFloatConstants);
+  if (BlockStillBound(s.vsBlock, guest_va))
+    return {};
   auto alloc = Allocate(s, kConstantBlockBytes, kCBVAlignment);
   if (!alloc.memory)
     return {};
-  CopyByteSwap32FlushNaN(alloc.memory,
-                         device_guest + offsetof(D3DDevice, vsFloatConstants),
-                         kConstantBlockBytes);
+  CopyByteSwap32FlushNaN(alloc.memory, guest_va, kConstantBlockBytes);
+  NoteBlockBound(s.vsBlock, guest_va);
   return alloc;
 }
 
@@ -316,13 +359,18 @@ ConstantAllocation UploadPixelShaderConstants(u32 device_guest) {
   auto &s = upload_state();
   if (!device_guest)
     return {};
+  const u32 guest_va = device_guest + offsetof(D3DDevice, psFloatConstants);
+  if (BlockStillBound(s.psBlock, guest_va))
+    return {};
   auto alloc = Allocate(s, kConstantBlockBytes, kCBVAlignment);
   if (!alloc.memory)
     return {};
-  CopyByteSwap32FlushNaN(alloc.memory,
-                         device_guest + offsetof(D3DDevice, psFloatConstants),
-                         kConstantBlockBytes);
-  FitResolvePatternToHostPixel(alloc.memory);
+  CopyByteSwap32FlushNaN(alloc.memory, guest_va, kConstantBlockBytes);
+  // A block fitted to the draw's shader and scale is not the guest's.
+  if (FitResolvePatternToHostPixel(alloc.memory))
+    s.psBlock.bound = false;
+  else
+    NoteBlockBound(s.psBlock, guest_va);
   return alloc;
 }
 
@@ -350,7 +398,12 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
   // sampling.
   auto &vs = pgr4::gpu::state();
   const auto *device_p = pgr4::mem::at<const D3DDevice>(device_guest);
+  // A slot the bound shaders do not fetch keeps whatever it held: nothing
+  // reads it, and an unchanged block skips the upload below.
+  const u32 sampled = pgr4::gpu::SampledSlotMaskLocked(vs);
   for (u32 i = 0; i < pgr4::gpu::kHostSamplerSlots; ++i) {
+    if (!(sampled >> i & 1u))
+      continue;
     // Slots from 16 are the vertex samplers, with indices of their own.
     const bool vertex = i >= pgr4::gpu::kPixelSamplerSlots;
     const u32 k = vertex ? i - pgr4::gpu::kPixelSamplerSlots : i;

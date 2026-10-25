@@ -311,6 +311,7 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements) {
 
     if (stream < std::size(decl->vertexStreams)) {
       decl->vertexStreams[stream] = true;
+      decl->streamMask |= 1u << stream;
     }
     if (input.location < PULL_MAX_LOCATIONS) {
       const u32 code = PullFormatCode(input.format);

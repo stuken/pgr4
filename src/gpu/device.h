@@ -122,9 +122,15 @@ public:
     u32 size = 0;
     u32 stride = 0;
   };
-  static void SetVertexStreams(const VertexStream (&streams)[16]);
+  // Only the slots in mask; the rest keep their binding.
+  static void SetVertexStreams(const VertexStream (&streams)[16],
+                               u32 mask = 0xFFFFu);
+  // The stream slots the bound declaration reads (all 16 without one).
+  static u32 DeclaredStreamMask();
   // The texture slots whose entry is non-null, under one lock.
   static void SetTextures(GuestTexture *const (&textures)[kHostSamplerSlots]);
+  // SampledSlotMaskLocked under s.mutex.
+  static u32 SampledSlotMask();
 
   // BeginCommandList force-dirties every stream slot, so a view left naming a
   // retired buffer would re-bind through it. Takes s.mutex.
@@ -566,6 +572,8 @@ u32 TargetScaleLocked(VideoState &s);
 // What a draw samples for the texture in a slot: the resolve source while the
 // resolve into the texture is still an alias, else the texture itself.
 GuestTexture *SampledTextureLocked(const VideoState &s, GuestTexture *tex);
+// The textures[] slots the bound shaders fetch through (bit i for slot i).
+u32 SampledSlotMaskLocked(const VideoState &s);
 // Into sample_overrides, copies of the bound textures whose scale differs
 // from the draw's target, at the target's scale. Records copies, so it runs
 // before the draw framebuffer is bound.

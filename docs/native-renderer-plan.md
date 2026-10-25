@@ -22,7 +22,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
-| 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Five more items are listed. |
+| 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us); the reflection view's scale and earlier submission are left. |
 
 ## What we know about PGR4
 
@@ -876,6 +876,16 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    would limit `BindGuestTextures`, `BuildGuestScaleCopiesLocked` and the
    shared constants' texture loop to the slots the draw reads. The chase
    camera's 161 shadow-map and mirror copies are most likely stale slots.
+   **Done** (`pgr4_sampled_slots_only`, on): the CTAB alone was not enough,
+   because three pixel shaders (`ps_8223B158`, `ps_8223B468`, `ps_8223B620`)
+   fetch through samplers it does not name. So XenosRecomp records every
+   texture fetch's slot (bit n for pixel sampler n, 16 + n for vertex
+   sampler n) and, under `PGR4_RECOMP`, emits the mask as
+   `ShaderCacheEntry::samplerSlotMask`. 190 shaders fetch nothing and none
+   more than 14 slots; checked against the HLSL dump, no pixel shader reads a
+   slot outside its mask. Binding, scale copies, the resolve-source barriers
+   and the shared constants skip the other slots, which keep their last
+   entries.
 3. **`Output::SurfaceScale` for PGR4.** Keeping 320x180 at 1x suits RR6's
    glow, whose blur taps are sized for 320 texels. PGR4's bloom chain may
    need it too. Its reflection view is scene geometry, though, and at full
@@ -898,12 +908,32 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
      `BindGuestTextures` likewise visits all 20 slots (see 2).
    - `CountRenderTarget` takes a mutex and a hash-map insert on every draw,
      only for a `pgr4_devmode` log. Gate it.
+
+   **Done:** a float block identical to the one bound on the list keeps its
+   binding (`pgr4_constant_reuse`, a memcmp of the guest bytes); only the
+   declared streams are mirrored (`pgr4_declared_streams_only`; slot 15,
+   which feeds the omitted elements, still follows the device), and
+   `SanitizePipelineState` drops the other slots' strides from the PSO key;
+   `CountRenderTarget` runs only under `pgr4_devmode`. With the sampled-slot
+   mask, the St Petersburg race at 3x after the camera change
+   (`perf_3x_audit` against `perf_3x_audit_off`, the new switches off) goes
+   from 2.92 to 2.73 us a draw: flush 1.07 to 0.94 (constants 0.30 to 0.25,
+   shared 0.28 to 0.21), geometry 1.35 to 1.30. Geometry is now the largest
+   part, and its buffer hash (0.85 ms a frame) is one per distinct buffer
+   drawn, which the cold-buffer scheme already keeps sparse. Declared
+   streams barely changed the count: the game rarely leaves stale streams
+   bound. Both runs throttled presents, so frame times say nothing.
 5. **MSAA resolves go through a scratch texture.** A multisampled colour
    source is first resolved into a scratch texture of its own size
    (`ResolvedSingleSampleLocked`) and then copied into the destination.
    That is 3 x (resolve + copy) of 3840x2160 RGBA16F a frame at 3x (about
    2 ms). When the destination matches the source's size and format,
-   resolve straight into it.
+   resolve straight into it. **Done:** `CopySurfaceToTextureLocked` does
+   so for a whole-surface resolve into a single-mip 2D destination of the
+   same size and format. The three scene resolves at 3x take 1.5 ms a frame
+   in the race's first camera (2.1 ms in `perf_3x_cache`), 1.1 ms in the
+   menus (1.4). Partial resolves (the mirror) and FXAA keep the scratch
+   texture.
 6. **One command list a frame, submitted at Present.** The GPU starts a frame
    only once the CPU has recorded all of it. Two frames in flight keep
    throughput at max(CPU, GPU), but latency is their sum. Submitting at pass

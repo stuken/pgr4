@@ -88,6 +88,16 @@ void SanitizePipelineState(PipelineState &state) {
     state.stencilEnable = false;
   }
 
+  // The input layout takes strides only from the slots its elements name, so
+  // the others' (whatever the device or an earlier draw left) stay out of the
+  // key. Slot 15 holds the elements the declaration omits.
+  if (state.vertexDeclaration) {
+    const u32 slots = state.vertexDeclaration->streamMask | 0x8000u;
+    for (u32 i = 0; i < 16; ++i)
+      if (!(slots >> i & 1u))
+        state.vertexStrides[i] = 0;
+  }
+
   if (state.depthStencilFormat == plume::RenderFormat::D32_FLOAT_S8_UINT) {
     state.depthStencilFormat = Video::DepthStencilFormat();
   }

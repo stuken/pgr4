@@ -183,6 +183,8 @@ struct GuestVertexDeclaration {
   u32 hend3SignedTexcoords = 0;  // ... and the signed ones
 
   bool vertexStreams[16]{};
+  // The same as a mask, bit n for stream n.
+  u32 streamMask = 0;
   u32 indexVertexStream = 0;
   // Per input location, what a pulled vertex shader reads there
   // (SharedConstants::pulledInputs): stream | PULL_FORMAT_* << 8, and the
