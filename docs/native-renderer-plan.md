@@ -910,6 +910,14 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    slot outside its mask. Binding, scale copies, the resolve-source barriers
    and the shared constants skip the other slots, which keep their last
    entries.
+   Regression, fixed: `BindGuestTextures` skipped a slot whose texture and
+   fetch words were unchanged within the current epoch (present frame and
+   mirror generation), but kept one epoch for all slots and advanced it on
+   the frame's first draw. A slot that draw did not sample stayed marked
+   current, so it was never looked up again. A paint change on the car
+   select screen (RB) rewrites the car's paint ramp, slot 11 of
+   `psCarPaintMetallic1` (a linear 3x512 `k_8_8_8_8`), and the car stayed
+   on its old (black) mirror. The epoch is now kept per slot.
 3. **`Output::SurfaceScale` for PGR4.** Keeping 320x180 at 1x suits RR6's
    glow, whose blur taps are sized for 320 texels. PGR4's bloom chain may
    need it too. Its reflection view is scene geometry, though, and at full

@@ -166,23 +166,24 @@ plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
 // Pixel samplers 0..15 and vertex samplers 0..3 (slots 16..19):
 // device.textures[s] pairs with fetch constant s.
 // Most draws bind what the draw before them did in most slots. A slot whose
-// texture, fetch constant, frame and mirror generation all match the last
-// draw's still holds the right binding, so it skips the lookup and the bind.
+// texture, fetch constant, frame and mirror generation all match its last
+// lookup still holds the right binding, so it skips the lookup and the bind.
 // A slot the bound shaders do not fetch is left as it is: its texture is not
 // mirrored or hashed until a draw reads it. Its last entry still describes
-// what VideoState holds there, so the skip above stays sound.
+// what VideoState holds there, so the skip above stays sound. That needs the
+// frame and generation per slot: a skipped slot may last have been looked up
+// frames ago (a car's paint ramp, rewritten on a colour change, kept its old
+// mirror).
 void BindGuestTextures(const D3DDevice &dev) {
   struct Slot {
     u32 va = 0;
     u32 fetch[6] = {};
+    u64 generation = 0;
+    u64 frame = ~0ull;
   };
   thread_local Slot t_last[pgr4::gpu::kHostSamplerSlots];
-  thread_local u64 t_generation = 0, t_frame = ~0ull;
   const u64 generation = pgr4::gpu::TextureMirrorGeneration();
   const u64 frame = pgr4::gpu::GuestMirrorFrame();
-  const bool same_epoch = generation == t_generation && frame == t_frame;
-  t_generation = generation;
-  t_frame = frame;
   pgr4::gpu::GuestTexture *textures[pgr4::gpu::kHostSamplerSlots] = {};
   u32 resolved = 0, unresolved = 0;
   bool any = false;
@@ -195,7 +196,7 @@ void BindGuestTextures(const D3DDevice &dev) {
     for (u32 k = 0; k < 6; ++k)
       fetch[k] = u32(dev.fetchConstants[i].dword[k]);
     Slot &last = t_last[i];
-    if (same_epoch && last.va == tex_va &&
+    if (last.generation == generation && last.frame == frame && last.va == tex_va &&
         std::memcmp(last.fetch, fetch, sizeof(fetch)) == 0) {
       ++resolved;
       continue;
@@ -207,6 +208,8 @@ void BindGuestTextures(const D3DDevice &dev) {
     // An unresolved texture leaves the slot as it was, so it is retried.
     last.va = tex ? tex_va : 0;
     std::memcpy(last.fetch, fetch, sizeof(fetch));
+    last.generation = generation;
+    last.frame = frame;
   }
   g_stats.textures_resolved.fetch_add(resolved, std::memory_order_relaxed);
   g_stats.textures_unresolved.fetch_add(unresolved, std::memory_order_relaxed);
