@@ -3,6 +3,7 @@
 #include "gpu/settings_overlay.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -108,6 +109,22 @@ void Combo(const char *label, const char *cvar,
   ImGui::PopID();
 }
 
+// A slider over a double cvar, within its declared range.
+void Slider(const char *label, const char *cvar, const char *format) {
+  const auto *info = rex::cvar::GetFlagInfo(cvar);
+  if (!info)
+    return;
+  ImGui::PushID(cvar);
+  Label(label, info);
+  float v = std::strtof(rex::cvar::GetFlagByName(cvar).c_str(), nullptr);
+  const float lo = float(info->constraints.min.value_or(0.0));
+  const float hi = float(info->constraints.max.value_or(1.0));
+  if (ImGui::SliderFloat("##v", &v, lo, hi, format))
+    rex::cvar::SetFlagByName(cvar, std::to_string(v));
+  RestartNote(info);
+  ImGui::PopID();
+}
+
 void Section(const char *title) {
   ImGui::Spacing();
   ImGui::SeparatorText(title);
@@ -189,6 +206,9 @@ void SettingsOverlay::OnDraw(ImGuiIO & /*io*/) {
         {{"1x (console)", "1"}, {"2x", "2"}, {"3x", "3"}});
   Checkbox("16-bit output", "pgr4_output_16bit");
   Checkbox("Console display correction", "pgr4_display_correction");
+
+  Section("Camera");
+  Slider("Bumper camera height", "pgr4_bumper_camera_height", "+%.2f m");
 
   ImGui::Spacing();
   ImGui::Separator();

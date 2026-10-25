@@ -23,7 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
-| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen). The bumper camera's height is still to find. See Phase 7. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu). See Phase 7. |
 
 ## What we know about PGR4
 
@@ -1522,6 +1522,47 @@ looks like at the defaults.
    - **Check:** two cars of different heights (a supercar and a bike, if
      bikes have the view) at 0 and at a few positive values. They should
      match xenos at 0.
+   - **Found** (2026-10-25). The first guess was wrong.
+     - **Not the player camera:** the `Vehicle.Cameras.*` set is the car's
+       Sorcery camera mounts. It is 11 64-byte entries at vehicle `+11600`
+       (`sub_8243C5F8` indexes them, `sub_8243D658` loads them from the
+       vehicle database), which `DisplayDebug` draws. The player camera does
+       not read it.
+     - **The player camera:** `Cam::CameraImp` (`CameraChase.cpp`). The
+       image has `Camera.Bumper.CarForward`, `CarSide`, `BikeForward` and
+       `BikeSide` beside `Camera.Chase.*` and `Camera.Dash.*`, and their
+       only reader is `sub_827DAC20`, now named `Camera_PlaceBumper`
+       (`config/game.toml`).
+     - **Where the eye goes:** it copies the camera's mount position (`+304`)
+       and orientation (`+320`) into its eye (`+16`, `+32`). It adds `f1`
+       times the up axis of the orientation's matrix, then the bumper
+       tweaks along the forward and side axes, which differ for cars and
+       bikes (`+340`).
+     - **The modes:** the per-frame update `sub_827D4688` switches on the
+       mode at `+496`. 256 is chase (`sub_827DC9F0`) and 257 the bumper
+       view, which passes `f1` = `+1492`. `SetMode` (`sub_827D5AE8`)
+       zeroes `+1488..+1507` and fills them only for chase (1.51 at
+       `+1492`), so **the bumper view's height is 0**: the eye sits on the
+       mount itself.
+     - **Other users of the placement:** mode 258, mode 259 (the dash view,
+       which reads `Camera.Dash.HeadAmount`, and for bikes falls back to the
+       bumper placement) and mode 768 call it with a constant 0.5.
+   - **Done:** `src/game/camera.cpp` hooks `Camera_PlaceBumper` and adds
+     `pgr4_bumper_camera_height` (0 to 1 m, default 0) to `f1` only while
+     the camera's mode is 257. The value is read every frame, so the F4
+     menu's *Camera* slider applies live. A debug-level line logs each
+     camera mode that reaches the placement.
+   - **Checked** (2026-10-25). In the Tokyo race the second LB press gives
+     mode 257, and it was confirmed by hand in game.
+     - **The eye:** a temporary probe in the hook, since removed, showed the
+       eye at the mount's height at 0 and 1.0 m above it at 1.0 while
+       driving.
+     - **The nose:** the red nose at the bottom of the view is fixed to the
+       camera, so it does not move.
+     - **Standing still:** with the car stopped on the grid, the eye rose
+       only about 0.24 m at 1.0, because the mount (`+304`) came out 0.65 m
+       lower. Something feeds the eye back into the mount. Its writer is not
+       yet found; look there if the slider's travel feels short.
 
 ---
 

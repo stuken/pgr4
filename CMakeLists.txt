@@ -86,11 +86,12 @@ set(PGR4_SOURCES
     ${PGR4_ICON_HEADER}
 )
 
-# What every build shares: test tooling (pgr4_input_script, pgr4_null_audio)
-# and the abort logger.
+# What every build shares: test tooling (pgr4_input_script, pgr4_null_audio),
+# the abort logger and the game tweaks (src/game).
 set(PGR4_COMMON_SOURCES
     src/core/memory_helpers.cpp
     src/core/settings.cpp
+    src/game/camera.cpp
     src/platform/guest_abort_log.cpp
     src/platform/input_script.cpp)
 

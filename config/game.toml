@@ -1,0 +1,11 @@
+# gotham4 game functions that pgr4's host code hooks. Found by behaviour with
+# scripts/re/funcdb.py; docs/native-renderer-plan.md, Phase 7, has how.
+#
+# The vehicle camera (Cam::CameraImp, source CameraChase.cpp) keeps its mode
+# at +496: 256 chase, 257 bumper, 258 and 259 (the dash view, which reads
+# Camera.Dash.HeadAmount) and 768 are others that reuse the bumper
+# placement. sub_827D4688 is the per-frame update that switches on it, and
+# sub_827D5AE8 is SetMode(camera, mode).
+
+[functions]
+0x827DAC20 = { name = "Camera_PlaceBumper" } # (camera, height f1): eye = the car's bumper mount (+304) + height * the car's up axis + Camera.Bumper.{Car,Bike}{Forward,Side}; mode 257 passes +1492 (0 after SetMode), the others 0.5
