@@ -63,6 +63,11 @@ REXCVAR_DEFINE_BOOL(pgr4_dump_raw, false, kCvarGroup,
                     "With pgr4_dump_frames, also write each resolve target's "
                     "memory (from 64 KiB before its base) as a .bin");
 
+REXCVAR_DEFINE_INT32(pgr4_dump_draw_textures, 0, kCvarGroup,
+                     "In the pgr4_dump_frames frames, also write the first four "
+                     "textures of every indexed draw with this index count, as "
+                     "pgr4_frame_N_r<100+slot>_<VA>_<W>x<H>.bmp");
+
 REX_EXTERN(__imp__D3DDevice_Resolve);
 REX_EXTERN(__imp__D3DDevice_InsertFence);
 REX_EXTERN(__imp__D3DDevice_BlockOnFence);
@@ -424,6 +429,27 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
     TraceCall("DrawIndexed", ctx,
               std::format(" prim={} base={} start={} n={}{}{}", ctx.r4.u32, ctx.r5.s32,
                           ctx.r6.u32, ctx.r7.u32, DescribeBuffers(ctx.r3.u32), consts));
+  }
+  // The textures a chosen draw samples, read from guest memory as it stands.
+  if (const i32 n = REXCVAR_GET(pgr4_dump_draw_textures); n > 0 && ctx.r7.u32 == u32(n)) {
+    u32 frame;
+    bool wanted;
+    {
+      std::lock_guard lock(g_mutex);
+      ParseWanted();
+      frame = g_frame + 1;
+      wanted = std::find(g_wanted.begin(), g_wanted.end(), frame) != g_wanted.end() ||
+               pgr4::script::CaptureWanted(pgr4::script::Capture::Dump, frame);
+    }
+    const auto *d = pgr4::mem::at<const D3DDevice>(ctx.r3.u32);
+    if (wanted && d) {
+      std::filesystem::path dir = rex::Runtime::instance()
+                                      ? rex::Runtime::instance()->user_data_root()
+                                      : std::filesystem::path(".");
+      for (u32 i = 0; i < 4; ++i)
+        if (const u32 va = u32(d->textures[i]))
+          DumpTexture(frame, 100 + i, va, 0, dir);
+    }
   }
   __imp__D3DDevice_DrawIndexedVertices(ctx, base);
 }

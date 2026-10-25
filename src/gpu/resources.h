@@ -176,8 +176,11 @@ struct GuestVertexDeclaration {
   // Per-TEXCOORD bit for unsigned integer types (UBYTE4, UINT1) bound UINT,
   // which uintTexcoord() converts to float (PGR3).
   u32 uintTexcoords = 0;
-  bool hasR11G11B10Normal = false;
-  bool hasDec3NNormal = false; // PGR3's 10:10:10:2 tangent basis
+  // Bit 8 * semantic + index (NORMAL 0, TANGENT 1, BINORMAL 2) for the
+  // tangent-basis elements packed 11:11:10, and for the 10:10:10:2 ones
+  // (DEC3N/DEC4N). One declaration can hold both (PGR4's riders).
+  u32 r11g11b10Basis = 0;
+  u32 dec3nBasis = 0;
   u32 uhend3nTexcoords = 0;    // TEXCOORDs bound raw for unpackUhend3n (PGR3)
   u32 hend3IntegerTexcoords = 0; // ... of those, the integer ones
   u32 hend3SignedTexcoords = 0;  // ... and the signed ones

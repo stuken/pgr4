@@ -235,20 +235,26 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements) {
       u32 &swapped = usage == D3DDeclUsage::kNormal    ? decl->swappedNormals
                      : usage == D3DDeclUsage::kTangent ? decl->swappedTangents
                                                        : decl->swappedBinormals;
+      // This element's bit in the packed-basis masks (tfetchPackedBasis).
+      const u32 basis_bit =
+          1u << (8u * (usage == D3DDeclUsage::kNormal    ? 0u
+                       : usage == D3DDeclUsage::kTangent ? 1u
+                                                         : 2u) +
+                 usage_index);
       if (type == D3DDeclType::kFloat3) {
         input.format = g_vulkan ? plume::RenderFormat::R32G32B32_FLOAT
                                 : plume::RenderFormat::R32G32B32_UINT;
       } else if (type == D3DDeclType::kDec3NAlt ||
                  type == D3DDeclType::kDec3NAlt2) {
-        // X360 packed 10/11/11 normal: one 32-bit lane, decoded by the
-        // kSpecConstantR11G11B10Normal branch in tfetchR11G11B10.
-        decl->hasR11G11B10Normal = true;
+        // X360 packed 10/11/11 normal: one 32-bit lane, decoded by
+        // tfetchPackedBasis.
+        decl->r11g11b10Basis |= basis_bit;
         if (g_vulkan)
           input.format = plume::RenderFormat::R32_FLOAT;
       } else if (type == D3DDeclType::kDec3N || type == D3DDeclType::kDec4N) {
-        // PGR3's 10:10:10:2 basis: one 32-bit lane, decoded by the
-        // kSpecConstantDec3NNormal branch in tfetchR11G11B10.
-        decl->hasDec3NNormal = true;
+        // The 10:10:10:2 basis (PGR3's, PGR4's rider tangents): one 32-bit
+        // lane, decoded by tfetchPackedBasis.
+        decl->dec3nBasis |= basis_bit;
         if (g_vulkan)
           input.format = plume::RenderFormat::R32_FLOAT;
       } else if (needs_bswap_swap(type)) {

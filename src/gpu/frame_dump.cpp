@@ -85,7 +85,7 @@ bool WriteBmp(const std::filesystem::path &path, u32 width, u32 height,
 }
 
 bool DumpTexture(VideoState &s, GuestTexture *rt,
-                 const std::filesystem::path &path) {
+                 const std::filesystem::path &path, u32 face = 0) {
   // A multisampled texture cannot be copied to a buffer.
   if (!rt || !rt->texture || rt->sampleCount != plume::RenderSampleCount::COUNT_1)
     return false;
@@ -127,7 +127,7 @@ bool DumpTexture(VideoState &s, GuestTexture *rt,
   list->copyTextureRegion(
       plume::RenderTextureCopyLocation::PlacedFootprint(
           readback.get(), rt->format, width, height, 1, row_pixels),
-      plume::RenderTextureCopyLocation::Subresource(rt->texture));
+      plume::RenderTextureCopyLocation::Subresource(rt->texture, 0, face));
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(rt->texture, was));
   list->end();
@@ -306,6 +306,13 @@ void MaybeDumpFrame(VideoState &s, GuestTexture *rt) {
                                              wanted, guest_va, tex->width,
                                              tex->height);
       DumpTexture(s, tex, rt_path);
+      // A cube's other faces, as _f<n>.
+      if (tex->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE)
+        for (u32 face = 1; face < 6; ++face)
+          DumpTexture(s, tex,
+                      dir / std::format("pgr4_frame_{}_rt_{:08X}_f{}_{}x{}.bmp", wanted,
+                                        guest_va, face, tex->width, tex->height),
+                      face);
     });
   }
   for (size_t i = 0; i < g_snapshots.size(); ++i) {

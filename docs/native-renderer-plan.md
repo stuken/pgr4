@@ -799,6 +799,30 @@ the old helper reproduces the black, the new one draws the suit and helmet.
 The input script also takes `capture@<s>s`, which triggers a RenderDoc
 capture when the game runs under RenderDoc.
 
+**Rider shading: fixed.** On the vehicle select screen (Arcade Mode, down
+twice to the Buell; `scratch/runs/menu_bike.sh`) the rider's suit had
+hard-edged shading bands and the helmet a patchy chrome pattern where xenos
+shows smooth gradients and a red helmet. The skinned vertex declaration
+mixes the tangent-basis packings: NORMAL is 11:11:10 (`kDec3NAlt`), TANGENT
+10:10:10:2 (`kDec4N`). The decode was chosen per pipeline by two spec
+constant bits, and with both set the DEC3N branch won, so every normal was
+decoded with the wrong bit layout. That bent the lighting (the bands) and
+the reflection vector into the environment cube (the helmet's pattern was
+the cube's sky and skyline, scrambled). The recompiler now emits
+`tfetchPackedBasis`, which takes the packing per element from two shared
+constant masks the declaration fills (`dec3nBasis` and `r11g11b10Basis` in
+c30.zw, bit 8 * semantic + index), and the two spec bits are no longer
+set. Ruled out on the way: the helmet's decal sheet (identical in both
+builds, clamp to transparent border), the environment cube's six faces
+(identical), the normal maps.
+
+Debug aids from this: `pgr4_debug_null_slots` (a mask of host sampler slots
+bound to the null texture, to find which input a fault comes from), cube
+resolve targets dumped per face (`_f<n>`), the draw trace's per-slot
+`clamp=` and `border=`, and the xenos build's `pgr4_dump_draw_textures=<n>`,
+which writes the first four textures of every indexed draw with that index
+count from guest memory.
+
 **Open.**
 - A rain race (heavy rain natively, and a day race in rain), and the rest
   of the exit list below (every city by day and night, every weather,

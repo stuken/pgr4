@@ -277,13 +277,16 @@ void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {
       continue;
     const char *kind = pgr4::gpu::FindResolveTarget(va) ? "resolve" : "mirror";
     const auto &fc = dev.fetchConstants[i].dword;
-    tex += std::format(" t{}=0x{:08X}({} fmt={} {}x{} swz={:03X} sign={:02X} exp={} dim={})",
+    tex += std::format(" t{}=0x{:08X}({} fmt={} {}x{} swz={:03X} sign={:02X} exp={} dim={} "
+                       "clamp={}{}{} border={})",
                        i, va, kind, u32(fc[1]) & 0x3F,
                        (u32(fc[2]) & 0x1FFF) + 1,
                        ((u32(fc[2]) >> 13) & 0x1FFF) + 1,
                        (u32(fc[3]) >> 1) & 0xFFF, (u32(fc[0]) >> 2) & 0xFF,
                        static_cast<i32>(u32(fc[3]) << 13) >> 26,
-                       (u32(fc[5]) >> 9) & 3);
+                       (u32(fc[5]) >> 9) & 3, (u32(fc[0]) >> 10) & 7,
+                       (u32(fc[0]) >> 13) & 7, (u32(fc[0]) >> 16) & 7,
+                       u32(fc[5]) & 3);
   }
   // The bound declaration: stream:offset type usage/index per element.
   if (const auto *decl = s.vertex_declaration; decl && decl->vertexElements) {

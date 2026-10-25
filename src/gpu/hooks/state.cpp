@@ -454,16 +454,6 @@ REX_HOOK_RAW(D3DDevice_CreateVertexDeclaration) {
 
 namespace {
 void BindVertexDeclaration(GuestVertexDeclaration *decl) {
-  // The recompiled VS guards its packed normal decodes on these bits.
-  auto &s = pgr4::gpu::state();
-  u32 spec = s.pipelineState.specConstants &
-             ~(pgr4::gpu::kSpecConstantR11G11B10Normal | pgr4::gpu::kSpecConstantDec3NNormal);
-  if (decl && decl->hasR11G11B10Normal)
-    spec |= pgr4::gpu::kSpecConstantR11G11B10Normal;
-  if (decl && decl->hasDec3NNormal)
-    spec |= pgr4::gpu::kSpecConstantDec3NNormal;
-  pgr4::gpu::Video::SetDirtyValue<u32>(s.dirtyStates.pipelineState,
-                                      s.pipelineState.specConstants, spec);
   pgr4::gpu::Video::SetVertexDeclaration(decl);
 }
 

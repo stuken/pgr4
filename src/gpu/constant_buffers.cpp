@@ -33,6 +33,9 @@ REXCVAR_DECLARE(bool, pgr4_scaled_post_filters);
 REXCVAR_DEFINE_BOOL(pgr4_debug_no_vertex_base, false, kCvarGroup,
                     "Bring-up experiment: leave the draw's base vertex out of "
                     "r0.x (if SV_VertexID already includes it)");
+REXCVAR_DEFINE_INT32(pgr4_debug_null_slots, 0, kCvarGroup,
+                     "Debug: bind the null texture to these host sampler slots "
+                     "(bit n = slot n) in every draw");
 REXCVAR_DEFINE_BOOL(pgr4_constant_reuse, true, kCvarGroup,
                     "Performance experiment: keep a draw's float constant "
                     "upload bound when the guest block has not changed since "
@@ -429,6 +432,8 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
     pgr4::gpu::GuestTexture *tex =
         vs.sample_overrides[i] ? vs.sample_overrides[i]
                            : pgr4::gpu::SampledTextureLocked(vs, vs.textures[i]);
+    if (REXCVAR_GET(pgr4_debug_null_slots) >> i & 1)
+      tex = nullptr;
     if (tex && tex->descriptorIndex != pgr4::gpu::kInvalidDescriptorIndex) {
       switch (tex->viewDimension) {
       case plume::RenderTextureViewDimension::TEXTURE_3D:
@@ -549,6 +554,10 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
       REXCVAR_GET(pgr4_debug_no_vertex_base) ? 0 : s.vertexIndexBase;
   s.shared.uintTexcoords =
       vs.vertex_declaration ? vs.vertex_declaration->uintTexcoords : 0u;
+  s.shared.dec3nBasis =
+      vs.vertex_declaration ? vs.vertex_declaration->dec3nBasis : 0u;
+  s.shared.r11g11b10Basis =
+      vs.vertex_declaration ? vs.vertex_declaration->r11g11b10Basis : 0u;
   // Vertex pulling: the bound streams as the input assembler sees them.
   for (u32 i = 0; i < 4; ++i) {
     const auto &view = vs.vertex_views[i];

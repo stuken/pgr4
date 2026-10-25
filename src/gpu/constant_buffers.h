@@ -84,7 +84,11 @@ struct SharedConstants {
   // bound UINT, which the shader's uintTexcoord() converts to float as Xenos
   // does.
   u32 uintTexcoords{};          // c30.y, byte 484
-  u32 pad30[2]{};               // c30.zw
+  // The vertex declaration's packed tangent basis, bit 8 * semantic + index
+  // (NORMAL 0, TANGENT 1, BINORMAL 2): DEC3N/DEC4N elements, then 11:11:10
+  // ones (shader_common.h tfetchPackedBasis).
+  u32 dec3nBasis{};             // c30.z, byte 488
+  u32 r11g11b10Basis{};         // c30.w, byte 492
   // Vertex pulling (shader_common.h pullVertex): streams 0-3's bound bytes
   // and strides, their device addresses on Vulkan (root SRVs t0-t3, space6,
   // on D3D12), and each input location's stream | PULL_FORMAT_* << 8 and
