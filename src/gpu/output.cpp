@@ -31,6 +31,11 @@ REXCVAR_DEFINE_INT32(pgr4_shadow_scale, 1, kCvarGroup,
                      "resolution scale (1 = the console's 512x512 and 256x256, "
                      "up to 4). Takes effect after a restart.")
     .range(1, 4);
+REXCVAR_DEFINE_INT32(pgr4_reflection_scale, 3, kCvarGroup,
+                     "Road reflection view resolution, as a multiple of the "
+                     "console's 320x180 (1 = native, up to 3), never above the "
+                     "render resolution scale. Takes effect after a restart.")
+    .range(1, 3);
 
 namespace pgr4::gpu {
 
@@ -132,12 +137,18 @@ u32 Output::ResolutionScale() {
   return scale;
 }
 
-u32 Output::SurfaceScale(u32 guest_width, u32 guest_height) {
-  constexpr u32 kGlowWidth = u32(kDesignCanvasWidth) / 4;
-  constexpr u32 kGlowHeight = u32(kDesignCanvasHeight) / 4;
-  if (guest_width == kGlowWidth && guest_height == kGlowHeight)
-    return 1;
-  return ResolutionScale();
+u32 Output::SurfaceScale(u32 guest_width, u32 guest_height,
+                         plume::RenderFormat format) {
+  constexpr u32 kQuarterWidth = u32(kDesignCanvasWidth) / 4;
+  constexpr u32 kQuarterHeight = u32(kDesignCanvasHeight) / 4;
+  if (guest_width != kQuarterWidth || guest_height != kQuarterHeight)
+    return ResolutionScale();
+  if (format == plume::RenderFormat::R8G8B8A8_UNORM)
+    return 1; // RR6's glow, PGR4's bloom
+  static const u32 reflection =
+      std::min(u32(std::clamp(REXCVAR_GET(pgr4_reflection_scale), 1, 3)),
+               ResolutionScale());
+  return reflection;
 }
 
 u32 Output::ShadowScale() {

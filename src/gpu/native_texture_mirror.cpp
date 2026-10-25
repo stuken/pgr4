@@ -735,7 +735,8 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
   // normalized coordinates and never see the difference.
   const u32 scale = scale_override
                         ? scale_override
-                        : Output::SurfaceScale(FetchWidth(fetch), FetchHeight(fetch));
+                        : Output::SurfaceScale(FetchWidth(fetch), FetchHeight(fetch),
+                                               format);
   const u32 width = FetchWidth(fetch) * scale;
   const u32 height = FetchHeight(fetch) * scale;
   if (!width || !height)

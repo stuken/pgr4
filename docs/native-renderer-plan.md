@@ -22,7 +22,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
-| 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us); the reflection view's scale and earlier submission are left. |
+| 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
 
 ## What we know about PGR4
 
@@ -918,11 +918,26 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    select screen (RB) rewrites the car's paint ramp, slot 11 of
    `psCarPaintMetallic1` (a linear 3x512 `k_8_8_8_8`), and the car stayed
    on its old (black) mirror. The epoch is now kept per slot.
-3. **`Output::SurfaceScale` for PGR4.** Keeping 320x180 at 1x suits RR6's
-   glow, whose blur taps are sized for 320 texels. PGR4's bloom chain may
-   need it too. Its reflection view is scene geometry, though, and at full
-   scale it would need neither the upscale nor the down copies. Measure the
-   pass at 3x and check the reflections.
+3. **`Output::SurfaceScale` for PGR4 (done: `pgr4_reflection_scale`).**
+   Keeping 320x180 at 1x suits RR6's glow, whose blur taps are sized for
+   320 texels. PGR4's 320x180 surfaces are two chains. The bloom (8888, 1x)
+   stays as it was. The other is the road reflection view: a 4x MSAA 7e3
+   surface with its own depth, drawn every other frame from a camera
+   mirrored below the road (the road itself not drawn), resolved, blurred
+   twice and resolved again into `0x412CD244`. Only the road shaders read
+   it (`psSceneRoadSurfaceGotham4`, `reflectionMap`, one bilinear fetch at
+   perturbed coordinates). The bonnet's reflection is not it: the bonnet
+   is identical either way.
+   That chain (the 7e3 surface, its depth and its float resolves) now
+   renders at `pgr4_reflection_scale`, 1 to 3 times 320x180 (default 3),
+   never above the resolution scale, so 1x runs are unchanged. GPU at 3x,
+   chase camera: 9.7 ms a frame before, 8.9 ms after. The three passes
+   cost 0.64 ms at 960x540 against 0.75 ms at 320x180, which had paid for a
+   per-draw scale copy of the reflection, and the upscales go. Countdown
+   frames at 3x (St Petersburg fog in chase and bonnet camera, Tokyo rain)
+   differ only in the crowd and the rain; the game's double blur leaves
+   little for the extra resolution to show. Stair steps on a kerb at speed
+   come from the game's motion blur and show at 1x too.
 4. **CPU per draw: about 3.1-3.4 us.** That is 7-10 ms a frame at the
    2,000-3,000 draws of these race frames, and 16.4 ms at the 5,300 of the
    first race frames of an earlier run (geometry 5.7, framebuffer 2.7, flush

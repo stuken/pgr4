@@ -12,6 +12,8 @@
 
 #include <rex/types.h>
 
+#include <plume_render_interface_types.h>
+
 namespace rex::ui {
 class Window;
 }
@@ -41,12 +43,16 @@ public:
   // surfaces already created keep it.
   static u32 ResolutionScale();
 
-  // The scale of one guest surface or resolve target: ResolutionScale(), but
-  // 1 for RR6's 320x180 glow buffer. Its 8-tap blurs step by game constants
-  // sized for 320 texels and rely on each bilinear tap spanning a whole
-  // texel, so a scaled buffer leaves gaps between the taps and the glow
-  // breaks into bands. Every 320x180 target RR6 binds is that glow chain.
-  static u32 SurfaceScale(u32 guest_width, u32 guest_height);
+  // The scale of one guest surface or resolve target: ResolutionScale(),
+  // except at 320x180. There RR6's glow stays at 1x: its 8-tap blurs step by
+  // game constants sized for 320 texels and rely on each bilinear tap
+  // spanning a whole texel, so a scaled buffer leaves gaps between the taps
+  // and the glow breaks into bands. PGR4's bloom (8888) stays with it. PGR4's
+  // road
+  // reflection view (4x MSAA 7e3, its depth and its float resolves) is scene
+  // geometry and renders at pgr4_reflection_scale, at most ResolutionScale().
+  static u32 SurfaceScale(u32 guest_width, u32 guest_height,
+                          plume::RenderFormat format);
   // pgr4_shadow_scale: the extra factor the car shadow depth surfaces (and the
   // shadow maps resolved out of them) render at, over SurfaceScale.
   static u32 ShadowScale();
