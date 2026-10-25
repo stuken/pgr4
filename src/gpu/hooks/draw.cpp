@@ -1121,11 +1121,11 @@ void ResolveNative(const ResolveArgs &a) {
       std::string rect = "full";
       if (const auto *r = pgr4::mem::at<const be_u32>(a.rect_va); r && a.rect_va)
         rect = std::format("{},{}-{},{}", u32(r[0]), u32(r[1]), u32(r[2]), u32(r[3]));
-      PGR4_INFO("first resolve into 0x{:08X}: flags=0x{:X} src={}x{} fmt={} "
-                "rect={} frame={} chain:{}",
-                dest, flags, src ? src->width : 0, src ? src->height : 0,
-                src ? static_cast<int>(src->format) : -1, rect,
-                pgr4::gpu::PresentCount(), GuestCallChain(a.sp, a.lr, 6));
+      PGR4_DEBUG("first resolve into 0x{:08X}: flags=0x{:X} src={}x{} fmt={} "
+                 "rect={} frame={} chain:{}",
+                 dest, flags, src ? src->width : 0, src ? src->height : 0,
+                 src ? static_cast<int>(src->format) : -1, rect,
+                 pgr4::gpu::PresentCount(), GuestCallChain(a.sp, a.lr, 6));
     }
   }
   // The guest clears only the resolved rect; the host clears the whole target.

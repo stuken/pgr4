@@ -65,7 +65,7 @@ Stats g_vs, g_ps;
 constexpr u32 kSummaryInterval = 50;
 
 void LogStageSummary(const char *stage, const Stats &st) {
-  PGR4_INFO("{} shaders: {} created, {} recompiled cache hits, {} host shaders "
+  PGR4_DEBUG("{} shaders: {} created, {} recompiled cache hits, {} host shaders "
            "built",
            stage, st.created.load(), st.cache_hits.load(),
            st.host_built.load());

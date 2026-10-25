@@ -42,6 +42,7 @@ REXCVAR_DEFINE_INT32(pgr4_supersampling, 1, kCvarGroup,
                      "(pgr4_resolution_scale). 1 = off, 2 = on. Requires "
                      "restart.")
     .range(1, 2)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
     .validator([](std::string_view v) {
       int n = 0;
       auto r = std::from_chars(v.data(), v.data() + v.size(), n);

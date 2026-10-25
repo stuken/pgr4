@@ -25,17 +25,21 @@
 
 REXCVAR_DEFINE_INT32(pgr4_resolution_scale, 0, kCvarGroup,
                      "Integer render resolution scale over the guest's 1280x720 "
-                     "(0 = from the output height, 1 = native)");
+                     "(0 = from the output height, 1 = native). Takes effect "
+                     "after a restart.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_INT32(pgr4_shadow_scale, 1, kCvarGroup,
                      "Car shadow map resolution, as a multiple of the render "
                      "resolution scale (1 = the console's 512x512 and 256x256, "
                      "up to 4). Takes effect after a restart.")
-    .range(1, 4);
+    .range(1, 4)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_INT32(pgr4_reflection_scale, 3, kCvarGroup,
                      "Road reflection view resolution, as a multiple of the "
                      "console's 320x180 (1 = native, up to 3), never above the "
                      "render resolution scale. Takes effect after a restart.")
-    .range(1, 3);
+    .range(1, 3)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace pgr4::gpu {
 
@@ -94,7 +98,7 @@ bool Output::Recompute() {
     return false;
   g_render_size.store(next, std::memory_order_relaxed);
   g_generation.fetch_add(1, std::memory_order_release);
-  PGR4_INFO("[output-res] render rect -> {}x{}", u32(next >> 32), u32(next));
+  PGR4_DEBUG("[output-res] render rect -> {}x{}", u32(next >> 32), u32(next));
   return true;
 }
 

@@ -266,8 +266,8 @@ plume::RenderFormat ConvertGuestFormat(u32 guest_format) {
         guest_format);
     return plume::RenderFormat::UNKNOWN;
   }
-  PGR4_WARN_FIRST(16, "ConvertGuestFormat: 0x{:08X} decoded from texture format {}",
-                  guest_format, guest_format & 0x3F);
+  PGR4_DEBUG_FIRST(16, "ConvertGuestFormat: 0x{:08X} decoded from texture format {}",
+                   guest_format, guest_format & 0x3F);
   return decoded;
 }
 

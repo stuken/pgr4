@@ -23,6 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen). The bumper camera's height is still to find. See Phase 7. |
 
 ## What we know about PGR4
 
@@ -1363,6 +1364,164 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 - real occlusion queries, which pgr3 left open (it answers every query
   visible): done (see Phase 6 findings, light glows);
 - Linux, as rr6 and pgr3 have it (written, not yet built).
+
+### Phase 7: User-facing polish
+
+Three items for players rather than for bring-up. None changes what a frame
+looks like at the defaults.
+
+1. **Renderer diagnostics at the debug level.** The SDK's default
+   `log_level` is `info`, and the renderer logs much of its bring-up
+   detail at `PGR4_INFO` (65 sites, plus 61 `PGR4_WARN` and 28
+   `PGR4_WARN_FIRST`). A player's log should hold what they or a bug
+   report need: the adapter and its capabilities, the output and resolution
+   scale, the precache summary, frame pacing, and real faults. Everything
+   else moves to `PGR4_DEBUG`, which `--log_level=debug` shows again.
+   - **To `PGR4_DEBUG`:** one-off bring-up facts with no diagnostic switch
+     behind them. These include `D3DDevice_Swap: first frame`,
+     `Direct3D_CreateDevice: guest device at`, `D3DDevice_Reset ...
+     (ignored)` (`hooks/device.cpp`), `first resolve into`
+     (`hooks/draw.cpp:1124`), `D3DSurface_GetDesc` (`hooks/state.cpp:100`),
+     `depth surface grows`, `[output-res]` (`device.cpp`, `output.cpp`) and
+     the occlusion summary (`occlusion.cpp:254`). Also the warnings that mark
+     paths the game takes normally rather than faults: check each
+     `PGR4_WARN_FIRST` against a clean day-race log and demote the ones it
+     prints.
+   - **Stay at `PGR4_INFO`:** output that a diagnostic cvar turns on, because
+     setting the cvar is the opt-in. That covers `[trace]` (`pgr4_trace_frame`),
+     `[perf]` (`pgr4_perf_stats`), `pgr4_dump_frames`, `pgr4_input_script`
+     and the `present N` markers those tools use. Making them need
+     `--log_level=debug` as well would break `scripts/runs/*` for nothing.
+   - **`PGR4_DEV_INFO`/`PGR4_DEV_WARN`:** these stay as they are. They
+     already need `pgr4_devmode`.
+   - **Check:** a native run to the St Petersburg race at the defaults. Its
+     `pgr4.log` should come to tens of lines before the race and stay quiet
+     during it. The same run with `--log_level=debug` should log everything
+     it logged before. Do the same for a xenos-build run, since
+     `xenos_resolve_dump.cpp` and `shader_census.cpp` share the macros.
+   - **Done** (2026-10-25). Twelve sites moved to `PGR4_DEBUG`, as listed
+     above, together with the shader creation summaries (`hooks/shader.cpp`,
+     19 lines a run). `ConvertGuestFormat`'s fallback decode is now
+     `PGR4_DEBUG_FIRST` (new in `core/logging.h`): the reflection view's
+     `0x182800B6` takes that path on purpose. The occlusion driver note is
+     `PGR4_INFO`, because the workaround handles it. The other
+     `PGR4_WARN_FIRST`s stay: none of them fired in the race. A native race
+     at the defaults (`scratch/runs/log_default`) logs 46 `[pgr4]` lines,
+     all of them the adapter line, the resolution scale, the occlusion note
+     and the input script's own markers. With `--log_level=debug`
+     (`scratch/runs/log_debug`) the demoted lines are back. The xenos build
+     compiles; its log is not yet checked.
+2. **A short F4 settings menu.** F4 is the SDK's generic `SettingsDialog`
+   (`rex_app.cpp:420`, `bind_settings`). It lists every registered cvar by
+   category: the SDK's own plus about 55 `pgr4_*`, most of them
+   `pgr4_debug_*`, trace, dump and switches kept from the Phase 6 audit. The
+   player's menu should show only frame rate, resolution and image quality.
+   - **How:** in `OnCreateDialogs` (`pgr4_app.h`, native build), call
+     `rex::ui::UnregisterBind("bind_settings")` and register our own F4 bind
+     that toggles a `pgr4::gpu::SettingsOverlay` (an `ImGuiDialog`, in
+     `src/gpu/settings_overlay.cpp`). It keeps the SDK dialog's
+     save-to-config behaviour (the same `config_path`), and a "Show all
+     settings" button opens the SDK's full dialog for developers. The SDK
+     stays unchanged. If `UnregisterBind` leaves the old cvar entry
+     registered, register the new bind under another name, such as
+     `bind_pgr4_settings` with default key F4, and set the old bind's key to
+     none.
+   - **What it lists**, grouped and labelled in plain words, with the cvar
+     name as a tooltip:
+     - *Display:* the SDK's `fullscreen` (`UI/Window`, `window.cpp:37`). It
+       is hot-reload: `ReXApp`'s change callback (`rex_app.cpp:363`) calls
+       `Window::SetFullscreen`, and the size change reaches the renderer
+       through `OnWindowPixelSizeChanged` and `Video::RequestResize`. The
+       toggle writes the cvar and leaves the rest to that path. `monitor`
+       and the start-up window size need a restart, so they stay in the full
+       dialog;
+     - *Frame rate:* `pgr4_fps_limit` and `pgr4_vsync`;
+     - *Resolution:* `pgr4_resolution_scale` (Auto, 1x, 2x, 3x) and
+       `pgr4_supersampling` (marked "restart");
+     - *Image quality:* `pgr4_msaa`, `pgr4_fxaa`, `pgr4_anisotropy`
+       (Game default, 2, 4, 8, 16), `pgr4_shadow_scale` (1, 2, 4),
+       `pgr4_reflection_scale` (1 to 3), `pgr4_output_16bit` and
+       `pgr4_display_correction`;
+     - a link to the keybinds page.
+     Kept out: every `pgr4_debug_*`, trace, dump, census, devmode, d3d12 and
+     DRED switch, and the Phase 6 performance switches
+     (`pgr4_scale_copy_cache`, `pgr4_sampled_slots_only`,
+     `pgr4_constant_reuse`, `pgr4_declared_streams_only`,
+     `pgr4_geometry_gpu_upload`, `pgr4_pso_*`). Those switches exist for A/B
+     runs, not for players.
+   - **Live or restart:** mark each entry from its cvar's lifecycle
+     (`kInitOnly` is greyed out with "restart"). For each hot-reload entry,
+     confirm that a change made while the game runs actually reaches
+     `gpu::Settings` and the frame.
+   - **Check:** F4 opens the short menu in the front end and in a race. Each
+     live control changes the picture. Fullscreen toggles both ways during a
+     race, with no stretched or stale back buffer and the menu still drawn
+     at the new size. Saving writes `pgr4.toml`, and "All settings..."
+     still reaches every cvar. The Vulkan exe too.
+   - **Built** (2026-10-25), not yet checked on screen:
+     `gpu/settings_overlay.{h,cpp}`, installed from
+     `Pgr4App::OnCreateDialogs`.
+     - **The bind.** A bind's name can't be registered twice, because its
+       key cvar is registered once. So the menu has its own bind,
+       `bind_pgr4_settings`, on the SDK bind's key. The SDK bind is
+       unregistered and its key emptied, so the keybinds page shows no
+       conflict.
+     - **The window.** It auto-sizes. Shadow and reflection detail are
+       combos, and supersampling is a checkbox over 1 and 2. The window has
+       Save and "All settings...", which opens the SDK dialog.
+     - **Restart-only options.** `pgr4_resolution_scale`,
+       `pgr4_supersampling`, `pgr4_msaa`, `pgr4_shadow_scale`,
+       `pgr4_reflection_scale` and `pgr4_output_16bit` are now declared
+       `kRequiresRestart`, so both menus mark them. The rest of the renderer
+       already reads each of them once.
+     - **MSAA.** `pgr4_msaa` was read at each host surface's creation, which
+       would have mixed sample counts after a change made mid-run. It is now
+       read once.
+     - **Live options.** Fullscreen, the frame rate limit, vsync, FXAA,
+       anisotropy and display correction are read per frame or per sampler,
+       so they apply live.
+3. **The bumper camera's height.** The bumper view sits too low in game.
+   Find what sets it, then add an offset cvar.
+   - **What is known:** camera placement is data, not code constants. The
+     image has no `Bumper` string. It has the mount names
+     (`Bonnet`, `Boot`, `RearViewMirror`, the wheels and mirrors, from
+     `0x82194C4C`) and tweakables `Vehicle.Cameras.CameraIndex`,
+     `OverrideCamera`, `UpdateFromSorcery` and `DisplayDebug` (`0x82194E18`
+     on). Each car's audio data (`Game/Audio/<car>.dat`) carries
+     `BumperCameraXOffset`/`Y`/`Z`, the listener position for that view, so
+     each car's visual camera offsets are most likely in its `*_game.dat`
+     inside `Game/vehicledata.pak` (a `KAP` archive) or in the car's own
+     pak. `GAME:\Camera\Cams_*.bin` are the course's TV and replay cameras,
+     not the player's.
+   - **Find the code:**
+     1. Which press of `LB` reaches the bumper view (Phase 4: twice is the
+        in-car view; the plan has also called three presses the bonnet
+        camera). Name the view index each press selects.
+     2. From the tweakables' registration, find the vehicle camera class.
+        `CameraIndex` is read where the current view is chosen.
+        `DisplayDebug` probably prints each view's offsets, which would name
+        the fields.
+     3. Find where that class reads a view's offset (a per-car table of
+        vec3s, one per view, read from the car data), and where it composes
+        the eye position from the car's matrix.
+     4. Confirm live: with `pgr4_trace_frame` in the bumper view, the eye
+        position the game passes to the scene's VS constants (`g_cameraPos`
+        is a named constant) should move by the same amount when the
+        offset's Y is patched in memory.
+   - **The change:** a mid-asm hook or a function override at the point where
+     the bumper view's offset is read. It adds `pgr4_bumper_camera_height`
+     (metres, default 0) to Y for the bumper view only. It is not a rewrite
+     of the car data, so every car moves by the same amount and 0 is the
+     original game. It belongs to the game code, not the renderer, so it goes
+     in `config/` and a new `src/game/camera.cpp` that builds in both
+     configurations, and it is listed in the F4 menu under a *Camera* group.
+   - **Watch for:** the bumper view's near plane and its bonnet or bumper
+     mesh culling, which may assume the original height (the car's own nose
+     clipping into view). Also the rear-view mirror pass, if this view has
+     one, and replays, which may reuse the same offsets.
+   - **Check:** two cars of different heights (a supercar and a bike, if
+     bikes have the view) at 0 and at a few positive values. They should
+     match xenos at 0.
 
 ---
 

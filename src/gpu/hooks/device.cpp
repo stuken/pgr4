@@ -108,7 +108,7 @@ void BindDefaultSurfaces(u32 device_va, u32 params_va) {
       SetDepthStencilSurface(device_va, depth);
   }
   pgr4::gpu::NoteDefaultSurfaces(back, depth);
-  PGR4_INFO("Direct3D_CreateDevice: {}x{} back buffer 0x{:08X} (format "
+  PGR4_DEBUG("Direct3D_CreateDevice: {}x{} back buffer 0x{:08X} (format "
            "0x{:08X}), depth 0x{:08X} (format 0x{:08X})",
            width, height, back, u32(pp->BackBufferFormat), depth,
            u32(pp->AutoDepthStencilFormat));
@@ -181,8 +181,8 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type,
 
   if (out_device)
     *out_device = device_va;
-  PGR4_INFO("Direct3D_CreateDevice: guest {}device at 0x{:08X}",
-            command_buffer ? "command-buffer " : "", device_va);
+  PGR4_DEBUG("Direct3D_CreateDevice: guest {}device at 0x{:08X}",
+             command_buffer ? "command-buffer " : "", device_va);
   return 0;
 }
 
@@ -194,9 +194,9 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type,
 // device keeps the default surfaces it was created with.
 u32 D3DDevice_Reset_hook(u32 device, u32 params) {
   const auto *pp = pgr4::mem::at<const PresentParameters>(params);
-  PGR4_INFO("D3DDevice_Reset 0x{:08X}: {}x{} format 0x{:08X} (ignored)", device,
-            pp ? u32(pp->BackBufferWidth) : 0, pp ? u32(pp->BackBufferHeight) : 0,
-            pp ? u32(pp->BackBufferFormat) : 0);
+  PGR4_DEBUG("D3DDevice_Reset 0x{:08X}: {}x{} format 0x{:08X} (ignored)", device,
+             pp ? u32(pp->BackBufferWidth) : 0, pp ? u32(pp->BackBufferHeight) : 0,
+             pp ? u32(pp->BackBufferFormat) : 0);
   return 0;
 }
 
@@ -269,7 +269,7 @@ std::atomic<u32> g_presents{0};
 u32 D3DDevice_Swap_hook(u32 /*device*/, u32 front_buffer) {
   const u32 s_presents = g_presents.fetch_add(1, std::memory_order_relaxed) + 1;
   if (s_presents == 1)
-    PGR4_INFO("D3DDevice_Swap: first frame (front buffer 0x{:08X})", front_buffer);
+    PGR4_DEBUG("D3DDevice_Swap: first frame (front buffer 0x{:08X})", front_buffer);
   if (s_presents == 60 || (s_presents % 600) == 0)
     pgr4::gpu::LogDrawStats(s_presents);
   // Places log lines on the present count pgr4_trace_frame, pgr4_dump_frames

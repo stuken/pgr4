@@ -25,6 +25,7 @@ REXCVAR_DECLARE(bool, pgr4_null_audio);
 #include "gpu/device.h"
 #include "gpu/imgui_overlay_drawer.h"
 #include "gpu/settings.h"
+#include "gpu/settings_overlay.h"
 #endif
 
 class Pgr4App : public rex::ReXApp {
@@ -63,6 +64,7 @@ class Pgr4App : public rex::ReXApp {
       paths.user_data_root = base_dir / "user";
       paths.cache_root = base_dir / "cache";
       paths.update_data_root = base_dir / "update";
+      config_path_ = paths.config_path;
   }
 
   void OnPostSetup() override{
@@ -109,6 +111,12 @@ class Pgr4App : public rex::ReXApp {
         });
   }
 
+  // F4 opens pgr4's short settings menu in place of the SDK's full one,
+  // which the menu still reaches.
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    pgr4::gpu::SettingsOverlay::InstallBind(drawer, config_path_);
+  }
+
   void OnWindowPixelSizeChanged(u32, u32) override {
     pgr4::gpu::Video::RequestResize();
   }
@@ -131,4 +139,8 @@ class Pgr4App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
+
+ private:
+  // Where the settings menus save (OnConfigurePaths).
+  std::filesystem::path config_path_;
 };

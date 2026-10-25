@@ -228,7 +228,7 @@ void Collect(u32 slot_index, bool executed) {
         counts[i] = stats[i].PSInvocations;
         if (!g_unwritten) {
           g_unwritten = true;
-          PGR4_WARN("occlusion: the driver leaves occlusion query results "
+          PGR4_INFO("occlusion: the driver leaves occlusion query results "
                     "unwritten; counting pixel shader invocations instead");
         }
       }
@@ -251,8 +251,8 @@ void Collect(u32 slot_index, bool executed) {
   slot.issued.clear();
   slot.resolved = 0;
   if (++g_collects % 1800 == 0 && g_answered) {
-    PGR4_INFO("occlusion: {} queries answered over {} frames, {} passed samples",
-              g_answered, 1800, g_passed);
+    PGR4_DEBUG("occlusion: {} queries answered over {} frames, {} passed samples",
+               g_answered, 1800, g_passed);
     g_answered = 0;
     g_passed = 0;
   }
