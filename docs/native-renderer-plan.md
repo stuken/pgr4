@@ -21,7 +21,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 2. XenosRecomp | **Exit met.** All 990 shaders compile to DXIL and SPIR-V with `REBLUE_RECOMP PGR4_RECOMP` on branch `pgr4` of the fork in `thirdparty/XenosRecomp` (`5f68d6f`, pushed). The build runs it (`pgr4_shader_cache_gen`) and compiles the cache into `pgr4_shader_cache`. pgr3's and rr6's shaders still compile; rr6's HLSL is unchanged, and 8 of pgr3's change as intended. Prelinking is Phase 3's. See Phase 2 findings. |
 | 3. Build integration | **Done.** Both configurations build. `PGR4_NATIVE_GPU=ON` builds `pgr4.exe` (D3D12) and `pgr4_vk.exe` (Vulkan) on plume with the shader cache and 2,420 prelinked variants; until Phase 5 they log that the renderer is missing and exit. Touching `shader_common.h` or `default.xexp` regenerates what depends on it. See Phase 3 findings. |
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
-| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: the missing light flares (a regression), a rain race and the rest of the exit list. See Phase 5 findings. |
+| 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Five more items are listed. |
 
 ## What we know about PGR4
@@ -805,13 +805,10 @@ capture when the game runs under RenderDoc.
   replays, photo mode).
 - `pgr4_fxaa` skips crash frames, whose final pass is `ps_821ADE28`
   rather than the tone map.
-- **Regression: no flares around the head and tail lights** since the
-  light glows read real occlusion queries (Phase 6 findings). The glows
-  no longer show through geometry, but the flares around the lights are
-  gone too. Not investigated yet. Check:
-  - the query quads' depth state;
-  - whether a D3D12 result wrongly reads 0;
-  - the ratio reader `sub_826A12A8`.
+- ~~Regression: no flares around the head and tail lights~~ (fixed): the
+  D3D12 occlusion results were never written on this machine's driver
+  (Phase 6 findings, light glows), so the glows read garbage in one frame
+  slot and 0 in the other.
 
 `pgr4_dump_resolve_sources` (with `pgr4_dump_frames`) writes each resolve's
 source as the resolve found it, as `pgr4_frame_N_sK_<dest>.bmp`. It shows
@@ -942,6 +939,39 @@ samples, so they grow with the scale squared. Both readers only compare
 against zero or against Total, so that is harmless.
 `pgr4_occlusion_queries` (on) turns the new path off. The rr6 sun counter
 (`occlusion_count_ps`, `occlusion_counting`) is still unused.
+
+**The driver never writes the occlusion results (fixed: pixel shader
+counts).** The first version of this read garbage in one frame slot (a
+stale `0xC0011000FFFF1000` pattern) and 0 in the other, every frame. So
+every glow faded out, and the flares around the head and tail lights went
+with them. The calls are right: RenderDoc shows each query draw between its
+`BeginQuery` and `EndQuery`, the indices, and one `ResolveQueryData` at the
+end of the list, and the debug layer is silent. But a standalone test
+(`scratch/occtest`) shows the Radeon 8060S driver (32.0.32015.7029) resolves
+occlusion and binary occlusion queries without writing anything:
+
+- into a readback buffer the fill pattern survives, at 1x and 4x MSAA, with
+  D32, D24S8 and D32S8 depth, and with a heap of 1, 4 or 1024 queries;
+- timestamps and pipeline statistics resolve into the same buffer fine.
+
+Each counted draw now carries a pipeline statistics query too. The
+occlusion results are filled with `~0` before the GPU resolves them, and one
+still holding it reads the draw's pixel shader invocations instead (logged
+once). The test shows that count works as a stand-in:
+
+- early depth rejects failing pixels before the shader, with `discard` in
+  the shader too, so the count is the pixels that pass;
+- the driver skips the shader of a draw with every colour write off, so a
+  counted draw like that (the probe) writes through a ZERO/ONE blend. The
+  test shows that blend keeps the target exactly, +Inf, NaN and -Inf outputs
+  included. Drivers that do write the results are untouched.
+
+With it the player's tail lights glow again in the chase camera at night.
+The headlights, behind the car, read 0. The night probe reads the full
+screen (921600 at 1x), and the grid's lights in the St Petersburg day race
+come and go as the cars move. The tail-light query quad is only 2 pixels.
+In one captured frame it sat about 2 mm behind the lamp's depth, and it
+passes in some frames and not others.
 
 D3D12 only. On Vulkan no query ever becomes available on this machine's
 driver (Radeon 8060S, Vulkan 1.4.359), not even an empty

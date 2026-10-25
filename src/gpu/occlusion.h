@@ -32,6 +32,10 @@ void Issue(u32 query, bool begin, bool end);
 // Around one guest draw's host draws, under the video state mutex.
 void DrawBegin(VideoState &s);
 void DrawEnd(VideoState &s);
+// After the guest render state is read, before the pipeline is bound: makes
+// a draw that will be counted run its pixel shader when only the shader's
+// invocations can count it (see occlusion.cpp).
+void KeepPixelShader(VideoState &s);
 
 // The recording slot's list has just begun / is about to end.
 void FrameBegin(VideoState &s);

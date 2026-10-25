@@ -23,7 +23,7 @@
 #
 # NATIVE=1 runs the native build (out/build/native-relwithdebinfo, at 1x)
 # instead; it dumps the front buffer and every resolve target. With it,
-# EXE=pgr4_vk.exe runs the Vulkan build.
+# EXE=pgr4_vk.exe runs the Vulkan build. PGR4_ARGS adds options to its command line.
 # Runs the xenos build in out/build/win-amd64-relwithdebinfo and writes
 # scratch/runs/<name>/: the logs (all.log is the two rotated files joined),
 # the BMP dumps, f<frame>.png front buffers and sheet.png. It relies on the
@@ -78,7 +78,7 @@ echo "$S" > $R/script.txt
 cd $B
 if [ -n "$NATIVE" ]; then
   timeout $tmo ./${EXE:-pgr4.exe} --log_file=$R/pgr4.log --pgr4_input_script=$S \
-    --pgr4_resolution_scale=1 > /dev/null 2>&1 || true
+    --pgr4_resolution_scale=1 $PGR4_ARGS > /dev/null 2>&1 || true
 else
   timeout $tmo ./pgr4.exe --log_file=$R/pgr4.log --pgr4_input_script=$S --readback_resolve=full \
     --d3d12_readback_resolve=true --pgr4_shader_census=true > /dev/null 2>&1 || true

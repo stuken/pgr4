@@ -26,6 +26,7 @@
 #include "gpu/backend.h"
 #include "gpu/constant_buffers.h"
 #include "gpu/format.h"
+#include "gpu/occlusion.h"
 #include "gpu/perf_stats.h"
 #include "gpu/pipeline/pipeline_cache.h"
 #include "gpu/pipeline/pso_recorder.h"
@@ -279,6 +280,7 @@ bool Video::FlushRenderStateLocked(u32 device_guest) {
   // alpha enable bit, from the register shadows RR6's render-state setters
   // write.
   ReadDeviceRenderState(s, device_guest);
+  occlusion::KeepPixelShader(s);
   // BindDrawFramebufferLocked has already flushed; pick up a guest viewport.
   FlushViewport();
 

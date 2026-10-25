@@ -33,6 +33,17 @@ namespace {
 // guest query's later draws go uncounted.
 constexpr u32 kQueries = 1024;
 
+// The Radeon 8060S driver (32.0.32015.7029) resolves occlusion queries
+// without writing anything; timestamps and pipeline statistics resolve
+// fine. So each draw also counts its pixel shader invocations, and a
+// result still holding kUnwritten reads that instead. Early depth rejects
+// failing pixels before the shader there, discard or not, so the count is
+// the pixels that passed (not samples, which neither reader minds). The
+// driver skips the shader of a draw with every colour write off, so such a
+// counted draw writes through a blend that keeps the target (KeepPixelShader).
+constexpr u64 kUnwritten = ~0ull;
+constexpr u64 kStatsOffset = sizeof(u64) * kQueries;
+
 struct Issued {
   u32 query = 0;
   u64 generation = 0;
@@ -42,6 +53,8 @@ struct Issued {
 
 struct Slot {
   ID3D12QueryHeap *heap = nullptr;
+  ID3D12QueryHeap *stats = nullptr;
+  // kQueries occlusion results, then kQueries pipeline statistics.
   std::unique_ptr<plume::RenderBuffer> readback;
   bool created = false;
   bool recording = false; // FrameBegin ran for this list
@@ -71,6 +84,16 @@ bool g_in_draw = false;
 u64 g_collects = 0;
 u64 g_answered = 0;
 u64 g_passed = 0;
+// Set once a resolve leaves a result unwritten.
+bool g_unwritten = false;
+
+// Marks the occlusion results [0, count) unwritten.
+void MarkUnwritten(Slot &slot, u32 count) {
+  if (u64 *data = static_cast<u64 *>(slot.readback->map())) {
+    std::fill(data, data + count, kUnwritten);
+    slot.readback->unmap();
+  }
+}
 
 bool Create(VideoState &s, Slot &slot) {
   slot.created = true;
@@ -78,14 +101,22 @@ bool Create(VideoState &s, Slot &slot) {
   D3D12_QUERY_HEAP_DESC desc{};
   desc.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
   desc.Count = kQueries;
-  if (FAILED(dev->d3d->CreateQueryHeap(&desc, IID_PPV_ARGS(&slot.heap)))) {
+  D3D12_QUERY_HEAP_DESC stats_desc = desc;
+  stats_desc.Type = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+  if (FAILED(dev->d3d->CreateQueryHeap(&desc, IID_PPV_ARGS(&slot.heap))) ||
+      FAILED(dev->d3d->CreateQueryHeap(&stats_desc,
+                                       IID_PPV_ARGS(&slot.stats)))) {
     PGR4_ERROR("occlusion: CreateQueryHeap failed");
     slot.heap = nullptr;
+    slot.stats = nullptr;
     return false;
   }
-  slot.readback = s.device->createBuffer(
-      plume::RenderBufferDesc::ReadbackBuffer(sizeof(u64) * kQueries));
-  return slot.readback != nullptr;
+  slot.readback = s.device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(
+      kStatsOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS) * kQueries));
+  if (!slot.readback)
+    return false;
+  MarkUnwritten(slot, kQueries);
+  return true;
 }
 
 Slot &Recording(VideoState &s) {
@@ -132,6 +163,27 @@ void DrawBegin(VideoState &s) {
   ++g_open.count;
   g_in_draw = true;
   List(s)->BeginQuery(slot.heap, D3D12_QUERY_TYPE_OCCLUSION, index);
+  List(s)->BeginQuery(slot.stats, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, index);
+}
+
+void KeepPixelShader(VideoState &s) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  PipelineState &ps = s.pipelineState;
+  if (!g_unwritten || !g_counting || ps.colorWriteEnable ||
+      ps.colorWriteEnable1 ||
+      ps.renderTargetFormat == plume::RenderFormat::UNKNOWN)
+    return;
+  // ZERO/ONE keeps the target exactly, Inf and NaN outputs included.
+  bool &dirty = s.dirtyStates.pipelineState;
+  Video::SetDirtyValue(dirty, ps.colorWriteEnable, u32(0xF));
+  Video::SetDirtyValue(dirty, ps.alphaBlendEnable, true);
+  Video::SetDirtyValue(dirty, ps.srcBlend, plume::RenderBlend::ZERO);
+  Video::SetDirtyValue(dirty, ps.destBlend, plume::RenderBlend::ONE);
+  Video::SetDirtyValue(dirty, ps.blendOp, plume::RenderBlendOperation::ADD);
+  Video::SetDirtyValue(dirty, ps.srcBlendAlpha, plume::RenderBlend::ZERO);
+  Video::SetDirtyValue(dirty, ps.destBlendAlpha, plume::RenderBlend::ONE);
+  Video::SetDirtyValue(dirty, ps.blendOpAlpha,
+                       plume::RenderBlendOperation::ADD);
 }
 
 void DrawEnd(VideoState &s) {
@@ -139,8 +191,10 @@ void DrawEnd(VideoState &s) {
   if (!g_in_draw)
     return;
   g_in_draw = false;
-  List(s)->EndQuery(Recording(s).heap, D3D12_QUERY_TYPE_OCCLUSION,
-                    Recording(s).used - 1);
+  Slot &slot = Recording(s);
+  List(s)->EndQuery(slot.heap, D3D12_QUERY_TYPE_OCCLUSION, slot.used - 1);
+  List(s)->EndQuery(slot.stats, D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+                    slot.used - 1);
 }
 
 void FrameBegin(VideoState &s) {
@@ -153,7 +207,7 @@ void FrameBegin(VideoState &s) {
     return;
   if (!slot.created && !Create(s, slot))
     return;
-  slot.recording = slot.heap && slot.readback;
+  slot.recording = slot.heap && slot.stats && slot.readback;
 }
 
 void FrameEnd(VideoState &s) {
@@ -163,10 +217,13 @@ void FrameEnd(VideoState &s) {
     return;
   slot.recording = false;
   slot.resolved = slot.used;
-  if (slot.used)
-    List(s)->ResolveQueryData(
-        slot.heap, D3D12_QUERY_TYPE_OCCLUSION, 0, slot.used,
-        static_cast<plume::D3D12Buffer *>(slot.readback.get())->d3d, 0);
+  if (!slot.used)
+    return;
+  auto *readback = static_cast<plume::D3D12Buffer *>(slot.readback.get())->d3d;
+  List(s)->ResolveQueryData(slot.heap, D3D12_QUERY_TYPE_OCCLUSION, 0,
+                            slot.used, readback, 0);
+  List(s)->ResolveQueryData(slot.stats, D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+                            0, slot.used, readback, kStatsOffset);
 }
 
 void Collect(u32 slot_index, bool executed) {
@@ -174,10 +231,24 @@ void Collect(u32 slot_index, bool executed) {
   Slot &slot = g_slots[slot_index];
   std::vector<u64> counts(slot.resolved);
   if (executed && slot.resolved) {
-    if (void *data = slot.readback->map()) {
+    if (auto *data = static_cast<const u8 *>(slot.readback->map())) {
       memcpy(counts.data(), data, sizeof(u64) * slot.resolved);
+      const auto *stats =
+          reinterpret_cast<const D3D12_QUERY_DATA_PIPELINE_STATISTICS *>(
+              data + kStatsOffset);
+      for (u32 i = 0; i < slot.resolved; ++i) {
+        if (counts[i] != kUnwritten)
+          continue;
+        counts[i] = stats[i].PSInvocations;
+        if (!g_unwritten) {
+          g_unwritten = true;
+          PGR4_WARN("occlusion: the driver leaves occlusion query results "
+                    "unwritten; counting pixel shader invocations instead");
+        }
+      }
       slot.readback->unmap();
     }
+    MarkUnwritten(slot, slot.resolved);
   }
   for (const Issued &q : slot.issued) {
     auto it = g_answers.find(q.query);
@@ -224,6 +295,7 @@ namespace pgr4::gpu::occlusion {
 bool Enabled() { return false; }
 void Issue(u32, bool, bool) {}
 void DrawBegin(VideoState &) {}
+void KeepPixelShader(VideoState &) {}
 void DrawEnd(VideoState &) {}
 void FrameBegin(VideoState &) {}
 void FrameEnd(VideoState &) {}
