@@ -989,6 +989,27 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    boundaries (after `EndTiling`, say) would let the GPU start sooner. Low
    priority.
 
+**Pipeline precache** (2026-10-25). `cache/pipeline_state_cache.h` lists
+736 pipelines: 702 from a manual `pgr4_pso_capture` session across the
+front end and the race options at 3x, and 34 from the scripted St
+Petersburg Arcade race at 1x (`scratch/runs/precache_capture2`). The list
+was empty before, so on a machine with no driver cache every pipeline
+compiled on the drawing thread as it was first drawn, at 10 ms or more
+each: a long stall entering a race, then a hitch whenever new content
+appeared. With vsync on at a matching refresh, each hitch also drains the
+present queue. `PaceFrame` then runs at 0.9 of the frame period until the
+queue refills, about 30 frames at 60 Hz, so the pacing stays uneven while
+hitches keep coming. That is not yet confirmed on a 60 Hz display (this
+machine's display sleeps and ticks at 32 Hz), and pacing on the swap
+chain's frame latency object is still to do. With the 702-entry list, that
+race compiled 687 pipelines on the background threads by its loading
+screen and 33 on the drawing thread. 20 of those were shader combinations
+the manual session never reached, and the rest differed from a listed
+entry only in game state (alpha source blend, cull mode, colour write
+mask), not in anything machine- or scale-specific. More sessions add to the
+list the same way: run with `pgr4_pso_capture`, then copy
+`<build>/cache/pipeline_state_cache.h` over the tree's copy.
+
 **Light glows drawn through geometry (fixed: real occlusion queries).** In
 `tail_lights.rdc`, a race at 3x, about 40 additive quads with no depth test
 follow the scene resolve. They land on the player's tail lights and on cars
@@ -1354,7 +1375,8 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 - resolution scale and supersampling at 2x and 3x, checked pass by pass;
 - `pgr4_shadow_scale`, if PGR4's shadow maps are separate square depth
   surfaces as PGR3's are;
-- the pipeline precache, captured with `pgr4_pso_capture` across every city,
+- the pipeline precache (736 pipelines so far, see Phase 6 findings),
+  captured with `pgr4_pso_capture` across every city,
   weather and vehicle type;
 - the per-draw cost work (batched slot binding, per-thread lookup caches, cold
   buffers, sparse texel hashes), re-measured since PGR4 may draw more;
