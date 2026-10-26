@@ -277,7 +277,7 @@ void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {
     const char *kind = pgr4::gpu::FindResolveTarget(va) ? "resolve" : "mirror";
     const auto &fc = dev.fetchConstants[i].dword;
     tex += std::format(" t{}=0x{:08X}({} fmt={} {}x{} swz={:03X} sign={:02X} exp={} dim={} "
-                       "clamp={}{}{} border={})",
+                       "clamp={}{}{} border={} mip={}..{} mipf={})",
                        i, va, kind, u32(fc[1]) & 0x3F,
                        (u32(fc[2]) & 0x1FFF) + 1,
                        ((u32(fc[2]) >> 13) & 0x1FFF) + 1,
@@ -285,7 +285,8 @@ void TraceDraw(const char *path, const D3DDevice &dev, u32 prim, u32 count) {
                        static_cast<i32>(u32(fc[3]) << 13) >> 26,
                        (u32(fc[5]) >> 9) & 3, (u32(fc[0]) >> 10) & 7,
                        (u32(fc[0]) >> 13) & 7, (u32(fc[0]) >> 16) & 7,
-                       u32(fc[5]) & 3);
+                       u32(fc[5]) & 3, (u32(fc[4]) >> 2) & 0xF,
+                       (u32(fc[4]) >> 6) & 0xF, (u32(fc[3]) >> 23) & 3);
   }
   // The bound declaration: stream:offset type usage/index per element.
   if (const auto *decl = s.vertex_declaration; decl && decl->vertexElements) {
@@ -1106,24 +1107,24 @@ void ResolveNative(const ResolveArgs &a) {
         c && a.clear_color_va && (flags & kResolveClearRenderTarget))
       words += std::format(" clear=({:.3g},{:.3g},{:.3g},{:.3g})", float(c[0]),
                            float(c[1]), float(c[2]), float(c[3]));
-    PGR4_INFO("[trace] Resolve flags=0x{:X} dest=0x{:08X} src={}x{} rect={} "
-             "point={} surface=0x{:08X}:{} lr=0x{:08X}",
-             flags, dest, src ? src->width : 0, src ? src->height : 0, rect,
-             point, surface_va, words, a.lr);
+    PGR4_INFO("[trace] Resolve flags=0x{:X} dest=0x{:08X} level={} face={} "
+             "src={}x{} rect={} point={} surface=0x{:08X}:{} lr=0x{:08X}",
+             flags, dest, level, face, src ? src->width : 0,
+             src ? src->height : 0, rect, point, surface_va, words, a.lr);
   }
-  // Each destination's first resolve, to find where runtime textures (like
-  // the material crop sheet) come from without tracing their frame.
+  // Each destination level's first resolve, to find where runtime textures
+  // (like the material crop sheet) come from without tracing their frame.
   {
     static std::mutex s_mutex;
-    static std::unordered_set<u32> s_seen;
+    static std::unordered_set<u64> s_seen;
     std::lock_guard lock(s_mutex);
-    if (dest && s_seen.insert(dest).second) {
+    if (dest && s_seen.insert(u64(level) << 32 | dest).second) {
       std::string rect = "full";
       if (const auto *r = pgr4::mem::at<const be_u32>(a.rect_va); r && a.rect_va)
         rect = std::format("{},{}-{},{}", u32(r[0]), u32(r[1]), u32(r[2]), u32(r[3]));
-      PGR4_DEBUG("first resolve into 0x{:08X}: flags=0x{:X} src={}x{} fmt={} "
-                 "rect={} frame={} chain:{}",
-                 dest, flags, src ? src->width : 0, src ? src->height : 0,
+      PGR4_DEBUG("first resolve into 0x{:08X} level {}: flags=0x{:X} "
+                 "src={}x{} fmt={} rect={} frame={} chain:{}",
+                 dest, level, flags, src ? src->width : 0, src ? src->height : 0,
                  src ? static_cast<int>(src->format) : -1, rect,
                  pgr4::gpu::PresentCount(), GuestCallChain(a.sp, a.lr, 6));
     }
@@ -1147,7 +1148,7 @@ void ResolveNative(const ResolveArgs &a) {
     // A depth resolve keeps its source's scale: the car shadow maps are
     // corners of shadow surfaces that render at pgr4_shadow_scale.
     if (auto *dst = pgr4::gpu::GetOrCreateResolveTarget(
-            dest, format, depth ? src->hostScale : 0u)) {
+            dest, format, depth ? src->hostScale : 0u, level)) {
       Video::TrackResolveSource(flags, dst, level, face);
       // D3DRECT {x1,y1,x2,y2} in surface pixels and D3DPOINT {x,y}.
       plume::RenderRect rect;

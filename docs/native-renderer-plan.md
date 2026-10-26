@@ -674,6 +674,21 @@ these changes. Each was found by comparing a native frame with xenos.
   reflected as sharply as glass. They now take the chain at `mip_address`
   (every face per level, a face `array_slice_stride_bytes` apart): the
   race's cubes have 7 to 9 levels.
+- **Resolve mip chains.** The water normal map (128x128 k_8_8_8_8, 8
+  levels, read by the water shader as `N0`) is built on the GPU. The
+  game renders level 0, then for each level N it draws a 5-tap downsample
+  of the target (ps hash 6C5F476F110A185D), fetching with the mip clamp
+  N-1..N-1 and a point mip filter, and resolves into level N. Every
+  resolve used to land on level 0, so the chain became a mosaic. A
+  2D resolve target now takes the fetch's level count once any resolve
+  names a level above 0, and the copies write that level's subresource,
+  clipped to the level's size. Targets that declare mips but are only
+  resolved at level 0 (the 256x256 ones) keep one host level. The
+  sampler also caps maxLOD at the fetch's `mip_max_level` (with a quarter
+  level of slack for point mips). Without that cap the downsample's
+  level-1 read fell to the empty small levels and came out flat grey.
+  The dynamic environment cube (resolved face by face) fetches mips
+  0..0, so one host level is right there.
 - **Volume swizzle.** The night road shaders sample a 64x64x32 k_8_8_8_8
   headlight cookie (`headlightMap`, sampler 15) as a volume, fetched ZYXW,
   for `.x`. Volume mirrors did not take the fetch swizzle, so the road read

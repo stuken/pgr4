@@ -64,12 +64,11 @@ struct DescKeyHash {
     bits |= static_cast<u64>(k.border) << 24;
     bits |= static_cast<u64>(k.maxAniso) << 28;
     bits |= static_cast<u64>(k.anisoEnabled) << 36;
-    // minLOD is a whole mip level (0-15). maxLOD is FLT_MAX or minLOD plus 0
-    // or 0.25, so only that offset's presence needs hashing.
+    // minLOD is a whole mip level (0-15), maxLOD one plus 0 or 0.25.
     bits |= static_cast<u64>(k.minLOD) << 40;
-    bits |= static_cast<u64>(k.maxLOD != k.minLOD) << 44;
+    bits |= static_cast<u64>(k.maxLOD * 4.0f) << 44;
     // lodBias is a 10-bit fetch field over 32.
-    bits |= static_cast<u64>(static_cast<i64>(k.lodBias * 32.0f) & 0x3FF) << 45;
+    bits |= static_cast<u64>(static_cast<i64>(k.lodBias * 32.0f) & 0x3FF) << 51;
     return std::hash<u64>{}(bits);
   }
 };
@@ -210,8 +209,17 @@ plume::RenderSamplerDesc DecodeFromFetch(const u32 fc[6], u32 variant) {
                         d.magFilter == plume::RenderFilter::LINEAR;
   d.anisotropyEnabled = aniso_on;
   d.maxAnisotropy = aniso_on ? aniso : 1u;
+  // mip_max_level caps the level as mip_min_level floors it. PGR4 builds its
+  // water normal map's chain by downsampling level N-1 into level N with both
+  // set to N-1; uncapped, the derivatives picked level N, the one being
+  // written. A point mip mode takes the quarter level above, as kBaseMap does.
   if (base_map)
     d.maxLOD = d.minLOD + (aniso_on ? 0.0f : 0.25f);
+  else
+    d.maxLOD = std::max(static_cast<float>(fetch.mip_max_level), d.minLOD) +
+               (d.mipmapMode == plume::RenderMipmapMode::NEAREST && !aniso_on
+                    ? 0.25f
+                    : 0.0f);
 
   d.borderColor = fetch.border_color == xe::BorderColor::k_ABGR_White
                       ? plume::RenderBorderColor::OPAQUE_WHITE

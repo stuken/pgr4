@@ -675,6 +675,10 @@ std::unordered_map<u32, std::unique_ptr<GuestTexture>> g_resolve_targets;
 // is a header the front end once resolved its depth into.
 std::unordered_map<u32, u32> g_resolve_base_of;
 std::unordered_map<u32, u32> g_resolve_by_base;
+// Resolve targets the guest has resolved into below their base level. PGR4
+// builds the water's 128x128 normal map chain so, a downsample and a resolve
+// per level; these get the fetch constant's mip chain.
+std::unordered_set<u32> g_resolve_mipped;
 
 void NoteResolveBaseLocked(u32 guest_va, u32 base) {
   if (auto it = g_resolve_base_of.find(guest_va); it != g_resolve_base_of.end()) {
@@ -746,7 +750,7 @@ plume::RenderFormat ResolveTargetHostFormat(u32 guest_va,
 }
 
 GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
-                                       u32 scale_override) {
+                                       u32 scale_override, u32 level) {
   if (!guest_va || format == plume::RenderFormat::UNKNOWN)
     return nullptr;
   xe::xe_gpu_texture_fetch_t fetch;
@@ -773,9 +777,21 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
 
   std::lock_guard lock(g_resolve_mutex);
   NoteResolveBaseLocked(guest_va, u32(fetch.base_address) << 12);
+  // A target resolved at its base alone keeps one level: the guest wrote
+  // nothing below it, so lower levels would sample as black.
+  if (level > 0 && !cube)
+    g_resolve_mipped.insert(guest_va);
+  const u32 mip_levels =
+      g_resolve_mipped.count(guest_va) && fetch.mip_address
+          ? std::min<u32>(fetch.mip_max_level,
+                          rex::log2_floor(std::max(FetchWidth(fetch),
+                                                   FetchHeight(fetch)))) +
+                1u
+          : 1u;
   auto &slot = g_resolve_targets[guest_va];
   if (slot && slot->width == width && slot->height == height &&
-      slot->format == format && slot->viewDimension == view_dim)
+      slot->format == format && slot->viewDimension == view_dim &&
+      slot->mipLevels == mip_levels)
     return slot.get();
   TextureGenerationGuard generation_guard;
   if (slot) {
@@ -793,7 +809,7 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
   desc.width = width;
   desc.height = height;
   desc.depth = 1;
-  desc.mipLevels = 1;
+  desc.mipLevels = mip_levels;
   desc.arraySize = cube ? 6 : 1;
   desc.format = format;
   desc.flags = IsRenderTargetCapable(format)
@@ -810,17 +826,23 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
   plume::RenderTextureViewDesc view_desc;
   view_desc.format = format;
   view_desc.dimension = view_dim;
-  view_desc.mipLevels = 1;
+  view_desc.mipLevels = mip_levels;
   tex->textureView = tex->texture->createTextureView(view_desc);
   tex->width = width;
   tex->height = height;
   tex->depth = 1;
-  tex->mipLevels = 1;
+  tex->mipLevels = mip_levels;
   tex->format = format;
   tex->guestFormat = u32(fetch.format);
   tex->hostScale = scale;
   tex->reducedScale = scale < Output::ResolutionScale();
   Video::BindTextureSRV(tex.get());
+  PGR4_DEBUG("resolve target 0x{:08X}: {}x{} x{} fmt={} dim={} mips={}..{} "
+             "mip_address=0x{:08X} host levels={}",
+             guest_va, FetchWidth(fetch), FetchHeight(fetch), scale,
+             u32(fetch.format), u32(fetch.dimension), u32(fetch.mip_min_level),
+             u32(fetch.mip_max_level), u32(fetch.mip_address) << 12,
+             mip_levels);
   slot = std::move(tex);
   {
     std::lock_guard base_lock(s_unhooked_mutex);
@@ -855,6 +877,7 @@ bool EvictGuestTexture(u32 guest_va) {
       g_resolve_targets.erase(it);
       ForgetResolveBaseLocked(guest_va);
     }
+    g_resolve_mipped.erase(guest_va);
   }
   EvictNativeTexture(guest_va);
   return found;

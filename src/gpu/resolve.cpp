@@ -230,10 +230,11 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
                              std::size(pre));
     src->layout = plume::RenderTextureLayout::COPY_SOURCE;
     dst->layout = plume::RenderTextureLayout::COPY_DEST;
-    if (dst_is_cube) {
+    if (dst_is_cube || dst->mipLevels > 1) {
       s.command_list->copyTextureRegion(
           plume::RenderTextureCopyLocation::Subresource(
-              dst->texture, dst->resolveLevel, dst->resolveFace),
+              dst->texture, dst->resolveLevel,
+              dst_is_cube ? dst->resolveFace : 0u),
           plume::RenderTextureCopyLocation::Subresource(src->texture, 0, 0));
     } else {
       s.command_list->copyTexture(dst->texture, src->texture);
@@ -545,11 +546,12 @@ namespace {
 bool ShaderCopyRegionLocked(VideoState &s, GuestTexture *src, GuestTexture *dst,
                             const plume::RenderRect *src_rect, u32 dst_x,
                             u32 dst_y) {
+  // Its framebuffer is the destination's base level.
   if (src->hostScale != dst->hostScale || dst->resolveScale != 1.0f ||
       src->sampleCount != plume::RenderSampleCount::COUNT_1 ||
       dst->sampleCount != plume::RenderSampleCount::COUNT_1 ||
       dst->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE ||
-      !IsRenderTargetCapable(dst->format))
+      dst->resolveLevel != 0 || !IsRenderTargetCapable(dst->format))
     return false;
   i32 left = src_rect ? std::max(src_rect->left, 0) : 0;
   i32 top = src_rect ? std::max(src_rect->top, 0) : 0;
@@ -650,7 +652,9 @@ bool CopySurfaceRegionLocked(VideoState &s, GuestTexture *src, GuestTexture *dst
     return false;
   const bool dst_is_cube =
       dst->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE;
-  const u32 level = dst_is_cube ? dst->resolveLevel : 0u;
+  const u32 level = dst->resolveLevel;
+  if (level >= dst->mipLevels)
+    return false;
   const u32 dst_w = std::max(dst->width >> level, 1u);
   const u32 dst_h = std::max(dst->height >> level, 1u);
   i32 left = src_rect ? src_rect->left : 0;
@@ -730,19 +734,25 @@ void Video::ResolveRtToTexture(GuestTexture *dst,
   // shadow depth surface grows to cover the larger targets it is also bound
   // with, and scaling the whole of it shrank each car's shadow map into a
   // corner.
+  // A 2D destination's level below the base (PGR4's water normal map chain)
+  // is a region copy into that level, the level's size from the surface.
+  const bool dst_is_cube =
+      dst->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE;
+  const u32 level = dst_is_cube ? 0u : dst->resolveLevel;
+  const u32 level_w = std::max(dst->width >> level, 1u);
+  const u32 level_h = std::max(dst->height >> level, 1u);
   plume::RenderRect corner;
   if (!src_rect && dst_x == 0 && dst_y == 0 && src->hostScale == dst->hostScale &&
-      (src->width > dst->width || src->height > dst->height) &&
-      dst->viewDimension != plume::RenderTextureViewDimension::TEXTURE_CUBE) {
-    corner = {0, 0, i32(std::min(src->width, dst->width)),
-              i32(std::min(src->height, dst->height))};
+      (src->width > level_w || src->height > level_h) && !dst_is_cube) {
+    corner = {0, 0, i32(std::min(src->width, level_w)),
+              i32(std::min(src->height, level_h))};
     src_rect = &corner;
   }
   const bool partial =
       (src_rect && (src_rect->left != 0 || src_rect->top != 0 ||
                     u32(src_rect->right) != src->width ||
                     u32(src_rect->bottom) != src->height)) ||
-      dst_x != 0 || dst_y != 0;
+      dst_x != 0 || dst_y != 0 || level != 0;
   if (partial) {
     perf::GpuMark(s, "partial resolve", dst);
     if (CopySurfaceRegionLocked(s, src, dst, src_rect, dst_x, dst_y)) {
@@ -752,11 +762,17 @@ void Video::ResolveRtToTexture(GuestTexture *dst,
     }
     static std::atomic<u32> s_warn{0};
     if (s_warn.fetch_add(1, std::memory_order_relaxed) < 8) {
-      PGR4_WARN("Resolve: partial resolve {}x{} fmt={} -> {}x{} fmt={} scale={} "
-               "needs a conversion, resolving the whole surface",
+      PGR4_WARN("Resolve: partial resolve {}x{} fmt={} -> {}x{} level {} fmt={} "
+               "scale={} needs a conversion, {}",
                src->width, src->height, static_cast<int>(src->format),
-               dst->width, dst->height, static_cast<int>(dst->format),
-               dst->resolveScale);
+               dst->width, dst->height, level, static_cast<int>(dst->format),
+               dst->resolveScale,
+               level ? "skipped" : "resolving the whole surface");
+    }
+    // The whole-surface paths write the base level.
+    if (level != 0) {
+      DetachSourceSurfaceLocked(s, dst);
+      return;
     }
   }
 
