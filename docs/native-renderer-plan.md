@@ -23,7 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
-| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu). See Phase 7. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu), and the garage walk camera now moves above 30 fps. See Phase 7. |
 
 ## What we know about PGR4
 
@@ -1419,7 +1419,7 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 
 ### Phase 7: User-facing polish
 
-Four items for players rather than for bring-up. Only the menu's console
+Five items for players rather than for bring-up. Only the menu's console
 defaults change what a frame looks like at the defaults.
 
 1. **Renderer diagnostics at the debug level.** The SDK's default
@@ -1677,6 +1677,21 @@ defaults change what a frame looks like at the defaults.
        (`xenos.png`), with sharper windows.
      - With no replacement present, every cube draw in `cube1.py`'s list
        (including the two 128x128 cubes) looks as it did.
+5. **Walking in the garage above 30 fps** (2026-10-26, fixed). The garage
+   walk camera stood still at 60 fps. It looked like a vsync bug only because
+   Remote Desktop's 32 Hz display held vsync runs near 32 fps.
+   - **The cause:** the walk camera (`sub_827DCBA0`, `Camera.Walk.*`) moves
+     by stick x `Camera.Walk.Speed` (5 mph) x the frame time, from the
+     `GetTickCount` delta. It passes each step to its collision callback
+     (`sub_824BB618`, camera `+644`), which splits it into
+     `trunc(length * 20)` sub-steps and moves nothing when that is 0. At
+     30 fps a full-stick step is 7.5 cm; above about 45 fps it is under 5 cm
+     and never moves.
+   - **The fix:** a mid-asm hook (`config/game.toml`, `0x824BB70C`,
+     `src/game/garage_walk.cpp`) makes a zero count 1, so a short step moves
+     whole. Steps stay under 5 cm, well inside the 0.3 m collision radius.
+     The stick now also walks below two thirds at 30 fps, which the console
+     ignored. Checked in game at 60 fps.
 
 ---
 

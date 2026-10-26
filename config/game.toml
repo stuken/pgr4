@@ -9,3 +9,14 @@
 
 [functions]
 0x827DAC20 = { name = "Camera_PlaceBumper" } # (camera, height f1): eye = the car's bumper mount (+304) + height * the car's up axis + Camera.Bumper.{Car,Bike}{Forward,Side}; mode 257 passes +1492 (0 after SetMode), the others 0.5
+
+# The garage walk camera (sub_827DCBA0, Camera.Walk.*) moves by stick *
+# Camera.Walk.Speed (5 mph) * the frame time, through the collision callback
+# sub_824BB618 (camera +644). That splits the step into trunc(length * 20)
+# sub-steps of up to 5 cm and moves nothing when the count is 0, so above
+# about 45 fps a full-stick step never moves. The hook sits before the extsw
+# that follows the count's load into r29 (src/game/garage_walk.cpp).
+[[midasm_hook]]
+address = 0x824BB70C
+name = "GarageWalk_SubstepCount"
+registers = ["r29"]
