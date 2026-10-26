@@ -1419,7 +1419,7 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 
 ### Phase 7: User-facing polish
 
-Three items for players rather than for bring-up. Only the menu's console
+Four items for players rather than for bring-up. Only the menu's console
 defaults change what a frame looks like at the defaults.
 
 1. **Renderer diagnostics at the debug level.** The SDK's default
@@ -1625,6 +1625,58 @@ defaults change what a frame looks like at the defaults.
        only about 0.24 m at 1.0, because the mount (`+304`) came out 0.65 m
        lower. Something feeds the eye back into the mount. Its writer is not
        yet found; look there if the slider's travel feels short.
+4. **Cube map dump and replace.** The buildings' reflection looks soft next
+   to the cars'. Both are 256x256 a face, but they are different cubes.
+   - **What is known** (`reflect.rdc`, `scratch/rdc_tools/cube1.py`):
+     - **The two cubes:** the buildings (`psSceneDiffuse` and kin, about 500
+       draws) read a static DXT1 cube from the track's data (`0x09014340`
+       or `0x0FC17800` in a St Petersburg run, 9 levels). The cars (about 40
+       draws) read the cube the game renders each frame (`0x06C10478`,
+       resolved face by face to 16-bit float).
+     - **Why it looks soft:** a flat window spreads a few cube texels over
+       hundreds of pixels, where a curved panel shrinks the whole cube.
+       Rendering at a higher resolution adds nothing. The detail is the
+       asset's, and xenos looks the same.
+     - **Why replacement doesn't help yet:** texture replacement
+       (`texture_replace.cpp`) is 2D only. `BuildCubeMirror` never calls
+       `ReplaceOrDumpTexture`, so cubes are neither dumped nor replaced, and
+       `LoadReplacement` rejects a cubemap DDS.
+   - **The change:**
+     - **Hash:** an XXH3 hash over all six faces' top level, seeded like 2D
+       textures but marked as a cube, so a face that matches a 2D texture
+       never collides with it.
+     - **Dump:** `pgr4_texture_dump` writes static cubes as standard cubemap
+       DDS files, with `DDSCAPS2_CUBEMAP` and all six face bits, each face
+       carrying its mip chain, in +X -X +Y -Y +Z -Z order. Check that
+       Xenos's face order is the same.
+     - **Load:** `LoadReplacement` accepts a cubemap DDS, either a legacy
+       header with all six faces or DX10 with `TEXTURECUBE` and an array
+       size of 1. It needs a host-format cube builder beside
+       `BuildHostTexture2DMips`, since `BuildBCMirrorTextureCube` takes a
+       guest format.
+     - **Fetch swizzle:** cube mirrors take the fetch swizzle as 2D textures
+       and volumes do (a gap noted under Phase 5's cube mips). Do this
+       before replacements exist, so their channel layout follows the same
+       rule as 2D.
+     - **Out of scope:** resolve targets, such as the dynamic car cube, are
+       never dumped or replaced.
+   - **Watch for: the explicit LOD.** The building shaders pick the level
+     themselves, (1 - glass mask) * 7, in units of the 256 chain. On a 1024
+     replacement, level 3 is 128 a face where the original's is 32, so brick
+     would reflect sharply again (the bug Phase 5's cube mips fixed). A
+     replacement larger than the original needs a LOD offset of
+     log2(new / original) on its fetches: the per-slot LodBias in
+     SharedConstants (800+), if the translator applies it to explicit-LOD
+     fetches, or `minLOD` and a bias on the sampler. Glass then reads the
+     extra levels and brick still reads the blurred ones.
+   - **Check:**
+     - A dump in St Petersburg writes the building cube as a DDS that an
+       image editor opens with six faces.
+     - Re-importing that dump unchanged gives an identical frame.
+     - A 4x upscale of it leaves the church's brick as matte as xenos
+       (`xenos.png`), with sharper windows.
+     - With no replacement present, every cube draw in `cube1.py`'s list
+       (including the two 128x128 cubes) looks as it did.
 
 ---
 
