@@ -26,6 +26,7 @@
 #include <rex/types.h>
 
 #include <plume_render_interface.h>
+#include <xxhash.h>
 
 #include "core/logging.h"
 #include "core/memory_helpers.h"
@@ -45,6 +46,9 @@
 #include "gpu/resources.h"
 #include "gpu/perf_stats.h"
 
+REXCVAR_DEFINE_BOOL(pgr4_log_vertex_textures, false, kCvarGroup,
+                    "Log each distinct texture a vertex sampler (slots 16-19) "
+                    "binds, and whether a resolve target or a mirror backs it");
 REXCVAR_DEFINE_INT32(pgr4_trace_frame, 0, kCvarGroup,
                      "Log every draw and resolve of present frame N (0 = off)");
 REXCVAR_DEFINE_INT32(pgr4_trace_frame_count, 1, kCvarGroup,
@@ -159,6 +163,46 @@ plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
   }
 }
 
+// pgr4_log_vertex_textures: each distinct texture a vertex sampler binds,
+// with what backs it and a full hash of its guest texels, once per change.
+// The damage-variant car shaders displace every vertex by what slots 16-19
+// sample, so a wrong backing garbles that car. A mirror bound again after its
+// texels changed is flagged: within the frame it was built (one texture
+// rewritten between draws) or a later one (its signature missed the change).
+void LogVertexTexture(u32 slot, u32 tex_va, const u32 (&fetch)[6],
+                      const pgr4::gpu::GuestTexture *tex, u64 frame) {
+  static std::mutex s_mutex;
+  static std::unordered_set<u64> s_logged;
+  const bool resolve = tex && pgr4::gpu::IsResolveTarget(tex);
+  const char *kind = !tex ? "none" : resolve ? "resolve" : "mirror";
+  const u64 texels = resolve ? 0 : pgr4::gpu::HashGuestTexels(tex_va);
+  u32 key[8] = {slot, tex_va};
+  std::memcpy(&key[2], fetch, sizeof(fetch));
+  const u64 hash = XXH3_64bits(key, sizeof(key)) ^
+                   reinterpret_cast<uintptr_t>(tex) ^ texels;
+  {
+    std::lock_guard lock(s_mutex);
+    if (!s_logged.insert(hash).second)
+      return;
+  }
+  const char *note = "";
+  if (tex && !resolve) {
+    const auto [built_texels, built_frame] = pgr4::gpu::MirrorBuiltFrom(tex);
+    if (built_texels && built_texels != texels)
+      note = built_frame == frame ? " TEXELS CHANGED IN FRAME" : " STALE MIRROR";
+  }
+  xe::xe_gpu_texture_fetch_t f;
+  std::memcpy(&f, fetch, sizeof(f));
+  PGR4_INFO("vertex texture slot {} (vs sampler {}) frame {}: header 0x{:08X} "
+            "fmt={} {}x{} tiled={} base=0x{:08X} mip=0x{:08X} texels={:016X} "
+            "-> {} {:p} {}x{} fmt={}{}",
+            slot, slot - pgr4::gpu::kPixelSamplerSlots, frame, tex_va,
+            u32(f.format), u32(f.size_2d.width) + 1, u32(f.size_2d.height) + 1,
+            u32(f.tiled), u32(f.base_address) << 12, u32(f.mip_address) << 12,
+            texels, kind, static_cast<const void *>(tex), tex ? tex->width : 0u,
+            tex ? tex->height : 0u, tex ? tex->guestFormat : 0u, note);
+}
+
 // Pixel samplers 0..15 and vertex samplers 0..3 (slots 16..19):
 // device.textures[s] pairs with fetch constant s.
 // Most draws bind what the draw before them did in most slots. A slot whose
@@ -192,12 +236,18 @@ void BindGuestTextures(const D3DDevice &dev) {
     for (u32 k = 0; k < 6; ++k)
       fetch[k] = u32(dev.fetchConstants[i].dword[k]);
     Slot &last = t_last[i];
-    if (last.generation == generation && last.frame == frame && last.va == tex_va &&
-        std::memcmp(last.fetch, fetch, sizeof(fetch)) == 0) {
+    // The log looks at every vertex-slot bind, skipped ones included.
+    const bool log = i >= pgr4::gpu::kPixelSamplerSlots &&
+                     REXCVAR_GET(pgr4_log_vertex_textures);
+    if (!log && last.generation == generation && last.frame == frame &&
+        last.va == tex_va && std::memcmp(last.fetch, fetch, sizeof(fetch)) == 0) {
       ++resolved;
       continue;
     }
-    auto *tex = pgr4::gpu::ResolveOrMirrorGuestTexture(tex_va);
+    auto *tex = pgr4::gpu::ResolveOrMirrorGuestTexture(
+        tex_va, i >= pgr4::gpu::kPixelSamplerSlots);
+    if (log)
+      LogVertexTexture(i, tex_va, fetch, tex, frame);
     ++(tex ? resolved : unresolved);
     textures[i] = tex;
     any = true;

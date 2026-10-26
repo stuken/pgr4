@@ -13,6 +13,7 @@
 #pragma once
 
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include <rex/types.h>
@@ -27,8 +28,9 @@ namespace pgr4::gpu {
 GuestTexture *GetOrCreateNativeMirror(u32 guest_va);
 
 // RR6: the mirror of an unhooked guest texture, built on first use and rebuilt
-// when its fetch constant changes. nullptr when unsupported.
-GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va);
+// when its fetch constant changes. nullptr when unsupported. 'vertex' when a
+// vertex sampler binds it: its tiled texels are then hashed in full.
+GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va, bool vertex = false);
 
 // Bumped whenever a mirror or resolve target is created, rebuilt or evicted:
 // a binding made under the same generation (and frame) still holds.
@@ -40,6 +42,17 @@ void ForEachResolveTarget(
 
 // RR6: the resolve target already backing a guest texture, or nullptr.
 GuestTexture *FindResolveTarget(u32 guest_va);
+
+// Whether 'tex' is a resolve target rather than a texel mirror (logging).
+bool IsResolveTarget(const GuestTexture *tex);
+
+// A full hash of the guest texels a mirror of 'guest_va' is built from, where
+// the mirror's own signature samples tiled textures sparsely (logging).
+u64 HashGuestTexels(u32 guest_va);
+
+// The HashGuestTexels value and frame mirror 'tex' was built from, recorded
+// while pgr4_log_vertex_textures is on; {0, 0} otherwise.
+std::pair<u64, u64> MirrorBuiltFrom(const GuestTexture *tex);
 
 // The host format a resolve into guest texture 'guest_va' writes: its own
 // format where the host models it (k_8_8_8_8, which clamps what a 7e3 or FP16

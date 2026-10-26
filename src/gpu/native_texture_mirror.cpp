@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/conversion.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
@@ -28,6 +29,7 @@
 #include "gpu/format.h"
 #include "gpu/guest_buffers.h"
 #include "core/memory_helpers.h"
+#include "core/settings.h"
 #include "gpu/d3d.h"
 #include "gpu/device.h"
 #include "gpu/host_resource_heap.h"
@@ -35,6 +37,11 @@
 #include "gpu/texture_replace.h"
 #include "gpu/texture_upload.h"
 #include "gpu/perf_stats.h"
+
+REXCVAR_DECLARE(bool, pgr4_log_vertex_textures);
+REXCVAR_DEFINE_BOOL(pgr4_log_resolve_match, false, kCvarGroup,
+                    "Log each texture header the resolve-target lookup turns "
+                    "a target down for, or aliases to another header's target");
 
 namespace pgr4::gpu {
 
@@ -52,6 +59,11 @@ std::unordered_map<u32, std::unique_ptr<GuestTexture>> g_native_mirrors;
 // drain so freeing the texture + rewriting its descriptor can't race an
 // in-flight command list.
 std::vector<std::unique_ptr<GuestTexture>> g_pending_native_destroy[kNumFrames];
+
+// pgr4_log_vertex_textures: the guest texels (HashGuestTexels) and frame each
+// live mirror was built from, so a mirror bound after its texels changed is
+// told apart from a fresh one at a reused pointer.
+std::unordered_map<const GuestTexture *, std::pair<u64, u64>> g_mirror_built_from;
 
 // Derived once from the fetch constant and the format's block geometry.
 struct MirrorLayout {
@@ -536,6 +548,7 @@ GuestTexture *GetOrCreateNativeMirror(u32 guest_va) {
   if (it != g_native_mirrors.end()) {
     // ResolveOrMirrorGuestTexture rebuilds when the texture's fetch constant
     // or linear texels changed under the same VA, so the old mirror is stale.
+    g_mirror_built_from.erase(it->second.get());
     g_pending_native_destroy[Video::RetireSlot("native mirror")].push_back(
         std::move(it->second));
     g_native_mirrors.erase(it);
@@ -617,6 +630,8 @@ GuestTexture *GetOrCreateNativeMirror(u32 guest_va) {
   auto stored = std::unique_ptr<GuestTexture>(tex);
   GuestTexture *raw = stored.get();
   g_native_mirrors.emplace(guest_va, std::move(stored));
+  if (REXCVAR_GET(pgr4_log_vertex_textures))
+    g_mirror_built_from[raw] = {HashGuestTexels(guest_va), GuestMirrorFrame()};
   return raw;
 }
 
@@ -630,6 +645,7 @@ void EvictNativeTexture(u32 guest_va) {
     return;
   // Defer teardown to the post-fence drain, and remove from the registry now so
   // a same-VA re-alloc builds a fresh mirror.
+  g_mirror_built_from.erase(it->second.get());
   g_pending_native_destroy[Video::RetireSlot("native mirror")].push_back(
       std::move(it->second));
   g_native_mirrors.erase(it);
@@ -657,6 +673,11 @@ std::mutex s_unhooked_mutex;
 std::unordered_map<u32, u64> s_signatures;
 std::unordered_set<u32> s_rejected;
 std::unordered_map<u32, std::pair<u64, u64>> s_texel_hashes;
+// Textures a vertex sampler has bound. The damage-variant car shaders move
+// every vertex by what they sample, so their tiled texels are hashed in full
+// rather than sampled, up to kFullHashBytes (a crumple map is 64 KB).
+std::unordered_set<u32> s_vertex_textures;
+constexpr u32 kFullHashBytes = 1u << 20;
 // Base and mip addresses per mirrored VA, unhooked mirrors and resolve targets
 // alike, so freeing their memory can find them. RR6's fetch constants carry the
 // data's virtual address (0xE.../0xF... physical heap views), not a physical one.
@@ -679,6 +700,9 @@ std::unordered_map<u32, u32> g_resolve_by_base;
 // builds the water's 128x128 normal map chain so, a downsample and a resolve
 // per level; these get the fetch constant's mip chain.
 std::unordered_set<u32> g_resolve_mipped;
+// The mirror frame of each resolve target's latest resolve
+// (EvictStaleResolveTargets).
+std::unordered_map<u32, u64> g_resolve_frame;
 
 void NoteResolveBaseLocked(u32 guest_va, u32 base) {
   if (auto it = g_resolve_base_of.find(guest_va); it != g_resolve_base_of.end()) {
@@ -709,23 +733,91 @@ GuestTexture *FindResolveTarget(u32 guest_va) {
   return it != g_resolve_targets.end() ? it->second.get() : nullptr;
 }
 
+// Whether a texture header describes resolve target 'tex': the same dimension,
+// guest size and texel layout. The layout, not the format: the bonnet's
+// k_16_16_16_16_EXPAND header samples the k_16_16_16_16_FLOAT scene.
+bool ResolveTargetFitsHeader(const GuestTexture &tex,
+                             const xe::xe_gpu_texture_fetch_t &header) {
+  const bool cube = tex.viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE;
+  if (header.dimension !=
+      (cube ? xe::DataDimension::kCube : xe::DataDimension::k2DOrStacked))
+    return false;
+  const u32 scale = std::max(tex.hostScale, 1u);
+  if (tex.width != FetchWidth(header) * scale ||
+      tex.height != FetchHeight(header) * scale)
+    return false;
+  const rg::FormatInfo *a = rg::FormatInfo::Get(tex.guestFormat);
+  const rg::FormatInfo *b = rg::FormatInfo::Get(header.format);
+  return a && b && a->block_width == b->block_width &&
+         a->block_height == b->block_height &&
+         a->bits_per_pixel == b->bits_per_pixel;
+}
+
+// pgr4_log_resolve_match: each distinct header the lookup turns a resolve
+// target down for, or aliases to another header's target, once.
+void LogResolveMatchLocked(const char *what, u32 guest_va,
+                           const xe::xe_gpu_texture_fetch_t &header,
+                           u32 target_va, const GuestTexture &tex) {
+  if (!REXCVAR_GET(pgr4_log_resolve_match))
+    return;
+  static std::unordered_set<u64> s_logged;
+  u32 key[8] = {guest_va, target_va};
+  std::memcpy(&key[2], &header, sizeof(header));
+  if (!s_logged.insert(XXH3_64bits(key, sizeof(key))).second)
+    return;
+  const auto b = g_resolve_base_of.find(target_va);
+  const u32 scale = std::max(tex.hostScale, 1u);
+  PGR4_INFO("resolve match {}: header 0x{:08X} fmt={} {}x{} dim={} "
+            "base=0x{:08X}, target 0x{:08X} fmt={} {}x{} base=0x{:08X}",
+            what, guest_va, u32(header.format), FetchWidth(header),
+            FetchHeight(header), u32(header.dimension),
+            u32(header.base_address) << 12, target_va, tex.guestFormat,
+            tex.width / scale, tex.height / scale,
+            b != g_resolve_base_of.end() ? b->second : 0u);
+}
+
 // The resolve target a texture header samples: its own while it still
-// describes it (the same format, or the base of its latest resolve), else the
-// one whose latest resolve wrote the memory the header now points at.
+// describes it (the base of its latest resolve, its size and texel layout),
+// else the one whose latest resolve wrote the memory the header now points
+// at, if it fits the header too. Pools reused after a course change can put
+// an unrelated texture's header at an old resolve header's address, or its
+// texels at an old resolve's base; a car's 8x6 k_8_8_8_8 control mesh given
+// the 128x128 Perlin or 320x180 bloom target instead would move its vertices
+// by noise. Such headers fall through to a mirror of their own texels.
 GuestTexture *FindResolveTargetForHeader(u32 guest_va,
                                          const xe::xe_gpu_texture_fetch_t &header) {
   const u32 base = u32(header.base_address) << 12;
   std::lock_guard lock(g_resolve_mutex);
   if (auto it = g_resolve_targets.find(guest_va); it != g_resolve_targets.end()) {
     const auto b = g_resolve_base_of.find(guest_va);
-    if (it->second->guestFormat == u32(header.format) ||
-        (b != g_resolve_base_of.end() && b->second == base))
+    if (b != g_resolve_base_of.end() && b->second == base &&
+        ResolveTargetFitsHeader(*it->second, header))
       return it->second.get();
+    LogResolveMatchLocked("own target rejected", guest_va, header, guest_va,
+                          *it->second);
   }
   if (auto b = g_resolve_by_base.find(base); base && b != g_resolve_by_base.end())
-    if (auto it = g_resolve_targets.find(b->second); it != g_resolve_targets.end())
+    if (auto it = g_resolve_targets.find(b->second); it != g_resolve_targets.end()) {
+      if (!ResolveTargetFitsHeader(*it->second, header)) {
+        LogResolveMatchLocked("alias rejected", guest_va, header, b->second,
+                              *it->second);
+        return nullptr;
+      }
+      if (b->second != guest_va)
+        LogResolveMatchLocked("alias", guest_va, header, b->second, *it->second);
       return it->second.get();
+    }
   return nullptr;
+}
+
+bool IsResolveTarget(const GuestTexture *tex) {
+  if (!tex)
+    return false;
+  std::lock_guard lock(g_resolve_mutex);
+  for (const auto &[va, target] : g_resolve_targets)
+    if (target.get() == tex)
+      return true;
+  return false;
 }
 
 void ForEachResolveTarget(
@@ -749,10 +841,54 @@ plume::RenderFormat ResolveTargetHostFormat(u32 guest_va,
   return src_format;
 }
 
+// Resolve targets outlive the course that made them: the game rebuilds its
+// headers inside pools it reuses, so no D3DResource_Destroy or XPhysicalFree
+// reaches them, and the next course's textures take over their header
+// addresses. A target is dropped once its own header no longer describes it
+// and nothing has resolved into it for kStaleResolveFrames. Both, since the
+// game re-points live resolve headers within a frame: 0x40E5D08C takes the
+// depth resolve and is also the bonnet's EXPAND header over the scene.
+constexpr u64 kStaleResolveFrames = 600;
+constexpr u64 kStaleSweepFrames = 60;
+
+void EvictStaleResolveTargets() {
+  static std::atomic<u64> s_last_sweep{0};
+  const u64 frame = GuestMirrorFrame();
+  u64 last = s_last_sweep.load(std::memory_order_relaxed);
+  if (frame < last + kStaleSweepFrames ||
+      !s_last_sweep.compare_exchange_strong(last, frame,
+                                            std::memory_order_relaxed))
+    return;
+  std::vector<u32> dead;
+  {
+    std::lock_guard lock(g_resolve_mutex);
+    for (const auto &[va, tex] : g_resolve_targets) {
+      if (auto f = g_resolve_frame.find(va);
+          f != g_resolve_frame.end() && frame - f->second < kStaleResolveFrames)
+        continue;
+      xe::xe_gpu_texture_fetch_t header;
+      const auto b = g_resolve_base_of.find(va);
+      if (tex && ReadFetch(va, header) &&
+          header.type == xe::FetchConstantType::kTexture &&
+          b != g_resolve_base_of.end() &&
+          b->second == u32(header.base_address) << 12 &&
+          ResolveTargetFitsHeader(*tex, header))
+        continue;
+      dead.push_back(va);
+    }
+  }
+  for (u32 va : dead) {
+    if (REXCVAR_GET(pgr4_log_resolve_match))
+      PGR4_INFO("resolve match: stale target 0x{:08X} evicted", va);
+    EvictGuestTexture(va);
+  }
+}
+
 GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
                                        u32 scale_override, u32 level) {
   if (!guest_va || format == plume::RenderFormat::UNKNOWN)
     return nullptr;
+  EvictStaleResolveTargets();
   xe::xe_gpu_texture_fetch_t fetch;
   if (!ReadFetch(guest_va, fetch) ||
       fetch.type != xe::FetchConstantType::kTexture)
@@ -777,6 +913,7 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
 
   std::lock_guard lock(g_resolve_mutex);
   NoteResolveBaseLocked(guest_va, u32(fetch.base_address) << 12);
+  g_resolve_frame[guest_va] = GuestMirrorFrame();
   // A target resolved at its base alone keeps one level: the guest wrote
   // nothing below it, so lower levels would sample as black.
   if (level > 0 && !cube)
@@ -791,8 +928,15 @@ GuestTexture *GetOrCreateResolveTarget(u32 guest_va, plume::RenderFormat format,
   auto &slot = g_resolve_targets[guest_va];
   if (slot && slot->width == width && slot->height == height &&
       slot->format == format && slot->viewDimension == view_dim &&
-      slot->mipLevels == mip_levels)
+      slot->mipLevels == mip_levels) {
+    // The same host texture can stand for a header whose format or scale
+    // changed (640x360 at 2x is 1280x720 at 1x); FindResolveTargetForHeader
+    // matches headers against these.
+    slot->guestFormat = u32(fetch.format);
+    slot->hostScale = scale;
+    slot->reducedScale = scale < Output::ResolutionScale();
     return slot.get();
+  }
   TextureGenerationGuard generation_guard;
   if (slot) {
     Video::NotifyTextureDestroyed(slot.get());
@@ -864,6 +1008,7 @@ bool EvictGuestTexture(u32 guest_va) {
     s_rejected.erase(guest_va);
     s_texel_hashes.erase(guest_va);
     s_texel_bases.erase(guest_va);
+    s_vertex_textures.erase(guest_va);
   }
   {
     std::lock_guard lock(g_resolve_mutex);
@@ -878,6 +1023,7 @@ bool EvictGuestTexture(u32 guest_va) {
       ForgetResolveBaseLocked(guest_va);
     }
     g_resolve_mipped.erase(guest_va);
+    g_resolve_frame.erase(guest_va);
   }
   EvictNativeTexture(guest_va);
   return found;
@@ -905,14 +1051,15 @@ u32 EvictGuestTexturesInRange(u32 begin, u32 end) {
 // freed and reused. Only the texel-identifying words are compared: the sampler
 // fields live in the device copy, not here.
 namespace {
-GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]);
+GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6],
+                                              bool vertex);
 } // namespace
 
 // Draws bind the same textures over and over, and the full lookup takes
 // several locks. A per-thread cache answers repeats until the texture's fetch
 // words, the frame (linear texels are rehashed once a frame) or the mirror
 // generation change.
-GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va) {
+GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va, bool vertex) {
   if (!guest_va)
     return nullptr;
   u32 fc[6];
@@ -923,26 +1070,66 @@ GuestTexture *ResolveOrMirrorGuestTexture(u32 guest_va) {
     u32 fc[6] = {};
     u64 generation = 0;
     u64 frame = ~0ull;
+    bool vertex = false;
     GuestTexture *tex = nullptr;
   };
   thread_local Entry t_cache[512];
   Entry &e = t_cache[(guest_va >> 3) & 511];
   const u64 generation = g_texture_generation.load(std::memory_order_acquire);
   const u64 frame = GuestMirrorFrame();
+  // A vertex lookup does not take an entry a pixel lookup cached: the slow path
+  // marks the texture for a full hash.
   if (e.va == guest_va && e.generation == generation && e.frame == frame &&
-      std::memcmp(e.fc, fc, sizeof(fc)) == 0)
+      (e.vertex || !vertex) && std::memcmp(e.fc, fc, sizeof(fc)) == 0)
     return e.tex;
-  GuestTexture *tex = ResolveOrMirrorGuestTextureSlow(guest_va, fc);
+  GuestTexture *tex = ResolveOrMirrorGuestTextureSlow(guest_va, fc, vertex);
   e.va = guest_va;
   std::memcpy(e.fc, fc, sizeof(fc));
   e.generation = generation;
   e.frame = frame;
+  e.vertex = vertex;
   e.tex = tex;
   return tex;
 }
 
+std::pair<u64, u64> MirrorBuiltFrom(const GuestTexture *tex) {
+  std::lock_guard lock(g_mirror_mutex);
+  auto it = g_mirror_built_from.find(tex);
+  return it != g_mirror_built_from.end() ? it->second : std::pair<u64, u64>{};
+}
+
+u64 HashGuestTexels(u32 guest_va) {
+  xe::xe_gpu_texture_fetch_t fetch;
+  if (!ReadFetch(guest_va, fetch) ||
+      fetch.type != xe::FetchConstantType::kTexture)
+    return 0;
+  const MirrorLayout L = MakeLayout(fetch);
+  auto hash = [](u32 base, size_t bytes) -> u64 {
+    const auto *src = pgr4::mem::try_at<const u8>(base);
+    if (!base || !bytes || !src ||
+        !pgr4::mem::try_at<const u8>(base + u32(bytes) - 1))
+      return 0;
+    return XXH3_64bits(src, bytes);
+  };
+  if (!fetch.tiled && fetch.dimension == xe::DataDimension::k2DOrStacked) {
+    const u32 pitch_texels =
+        fetch.pitch ? u32(fetch.pitch) << 5 : rex::align(L.width, 32u);
+    return hash(fetch.base_address << 12,
+                size_t(pitch_texels / std::max(1u, L.texels_per_edge)) *
+                    L.bytes_per_block * (L.block_h + u32(L.pack_off_y)));
+  }
+  const u32 slices = fetch.dimension == xe::DataDimension::kCube ? 6u
+                     : fetch.dimension == xe::DataDimension::k3D
+                         ? rex::align(L.depth, 4u)
+                         : 1u;
+  const u32 bytes = L.aligned_w * L.aligned_h * L.bytes_per_block * slices;
+  return hash(fetch.base_address << 12, bytes) ^
+         hash(fetch.mip_address << 12, bytes / 3) * 0x9E3779B97F4A7C15ull;
+}
+
 namespace {
-GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]) {
+GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6],
+                                              bool vertex) {
   xe::xe_gpu_texture_fetch_t header;
   std::memcpy(&header, fc, sizeof(header));
   if (GuestTexture *resolved = FindResolveTargetForHeader(guest_va, header))
@@ -982,9 +1169,12 @@ GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]) 
     // the old ones, a diffuse slot drawing a normal map, until something
     // rebuilt it. A full hash of every tiled texture every frame is too
     // costly, so 64 16-byte samples spread over the base level and the start
-    // of the mips stand in, once a frame.
+    // of the mips stand in, once a frame. Vertex textures are hashed in full
+    // (s_vertex_textures).
     const u64 frame = GuestMirrorFrame();
     std::lock_guard hash_lock(s_unhooked_mutex);
+    if (vertex)
+      s_vertex_textures.insert(guest_va);
     auto &[hashed_frame, hash] = s_texel_hashes[guest_va];
     if (hashed_frame != frame || !hash) {
       const MirrorLayout L = MakeLayout(fetch);
@@ -993,25 +1183,28 @@ GuestTexture *ResolveOrMirrorGuestTextureSlow(u32 guest_va, const u32 (&fc)[6]) 
                              ? rex::align(L.depth, 4u)
                              : 1u;
       const u32 bytes = L.aligned_w * L.aligned_h * L.bytes_per_block * slices;
-      constexpr u32 kSamples = 64, kSampleBytes = 16;
-      u64 samples[kSamples * kSampleBytes / 8];
-      u32 n = 0;
-      // One checked translation for each end of the range; the samples in
-      // between read through the host pointer.
-      auto take = [&](u32 base, u32 span, u32 count) {
-        if (!base || span < kSampleBytes)
-          return;
-        const auto *b = pgr4::mem::try_at<const u8>(base);
-        if (!b || !pgr4::mem::try_at<const u8>(base + span - 1))
-          return;
-        for (u32 i = 0; i < count && n < kSamples; ++i, ++n) {
-          const u32 off = u32(u64(span - kSampleBytes) * i / std::max(count - 1, 1u)) & ~15u;
-          std::memcpy(&samples[n * 2], b + off, kSampleBytes);
-        }
-      };
-      take(fetch.base_address << 12, bytes, fetch.mip_address ? 48 : 64);
-      take(fetch.mip_address << 12, std::max(bytes / 3, kSampleBytes), 16);
-      {
+      if (bytes <= kFullHashBytes && s_vertex_textures.count(guest_va)) {
+        perf::Scope timer(perf::Counter::TexelHash, bytes + bytes / 3);
+        hash = HashGuestTexels(guest_va) | 1;
+      } else {
+        constexpr u32 kSamples = 64, kSampleBytes = 16;
+        u64 samples[kSamples * kSampleBytes / 8];
+        u32 n = 0;
+        // One checked translation for each end of the range; the samples in
+        // between read through the host pointer.
+        auto take = [&](u32 base, u32 span, u32 count) {
+          if (!base || span < kSampleBytes)
+            return;
+          const auto *b = pgr4::mem::try_at<const u8>(base);
+          if (!b || !pgr4::mem::try_at<const u8>(base + span - 1))
+            return;
+          for (u32 i = 0; i < count && n < kSamples; ++i, ++n) {
+            const u32 off = u32(u64(span - kSampleBytes) * i / std::max(count - 1, 1u)) & ~15u;
+            std::memcpy(&samples[n * 2], b + off, kSampleBytes);
+          }
+        };
+        take(fetch.base_address << 12, bytes, fetch.mip_address ? 48 : 64);
+        take(fetch.mip_address << 12, std::max(bytes / 3, kSampleBytes), 16);
         perf::Scope timer(perf::Counter::TexelHash, n * kSampleBytes);
         hash = XXH3_64bits(samples, n * kSampleBytes) | 1;
       }
