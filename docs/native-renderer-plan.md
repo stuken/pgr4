@@ -663,6 +663,17 @@ these changes. Each was found by comparing a native frame with xenos.
   host drew them with the previous declaration and the movies stayed black.
   The SetFVF hook now builds the matching declaration (one per FVF) and binds
   it.
+- **Cube mips.** Quebec's church brick reflected the sky and clouds where
+  xenos shows them on the windows only (`reflect.rdc`, one
+  `psSceneDiffuse` draw for the whole facade). The building shaders scale
+  the environment cube (`cubeMap`, slot 7) by Fresnel times the material
+  map's red channel, which is mid-grey on brick too, and sample it at
+  level (1 - green) * `g_buildingSettings1.z` (7), green being the glass
+  mask. So brick reads the cube's blurred low mips, close to a flat tint,
+  and glass the sharp base. Cube mirrors uploaded the base alone, so brick
+  reflected as sharply as glass. They now take the chain at `mip_address`
+  (every face per level, a face `array_slice_stride_bytes` apart): the
+  race's cubes have 7 to 9 levels.
 - **Volume swizzle.** The night road shaders sample a 64x64x32 k_8_8_8_8
   headlight cookie (`headlightMap`, sampler 15) as a volume, fetched ZYXW,
   for `.x`. Volume mirrors did not take the fetch swizzle, so the road read
@@ -924,10 +935,13 @@ Video memory is not the limit (3.5 GB used of a 113 GB budget).
    320 texels. PGR4's 320x180 surfaces are two chains. The bloom (8888, 1x)
    stays as it was. The other is the road reflection view: a 4x MSAA 7e3
    surface with its own depth, drawn every other frame from a camera
-   mirrored below the road (the road itself not drawn), resolved, blurred
-   twice and resolved again into `0x412CD244`. Only the road shaders read
-   it (`psSceneRoadSurfaceGotham4`, `reflectionMap`, one bilinear fetch at
-   perturbed coordinates). The bonnet's reflection is not it: the bonnet
+   mirrored below the road, resolved, blurred twice and resolved again into
+   `0x412CD244`. It draws the simple road (`psSceneRoadSurfaceGotham4_Simple`),
+   buildings, trees, cars and `psSceneMslSpec`, which reads the view's own
+   previous resolve (b157 stays set). Twelve shaders read it
+   (`reflectionMap`, slot 13, one bilinear fetch at perturbed coordinates,
+   gated by b157): the road surfaces, `psSceneMslSpec*` and
+   `psScenePuddle*`. The bonnet's reflection is not it: the bonnet
    is identical either way.
    That chain (the 7e3 surface, its depth and its float resolves) now
    renders at `pgr4_reflection_scale`, 1 to 3 times 320x180 (default 1

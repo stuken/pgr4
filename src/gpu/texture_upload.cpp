@@ -270,10 +270,10 @@ GuestTexture *BuildHostTexture2DMips(
 }
 
 GuestTexture *BuildBCMirrorTextureCube(u32 width, u32 height, u32 format,
-                                              const u8 *faces[6],
-                                              size_t face_byte_size,
-                                              u32 staging_row_bytes,
-                                              u32 row_width_texels) {
+                                              const BCMipLevel *const faces[6],
+                                              u32 level_count) {
+  if (level_count == 0)
+    return nullptr;
   plume::RenderFormat fmt;
   if (!BCFormatFromGuestByte(format, fmt)) {
     PGR4_WARN("BuildBCMirrorTextureCube: unsupported BC format 0x{:X}", format);
@@ -287,23 +287,26 @@ GuestTexture *BuildBCMirrorTextureCube(u32 width, u32 height, u32 format,
   d.width = width;
   d.height = height;
   d.depth = 0;
-  d.mip_levels = 1;
+  d.mip_levels = level_count;
   d.array_size = 6;
   d.flags = plume::RenderTextureFlag::CUBE;
   d.caller_name = "BuildBCMirrorTextureCube";
-  BCSubresourceUpload ups[6];
-  for (int face = 0; face < 6; ++face) {
-    ups[face].data = faces[face];
-    ups[face].size = face_byte_size;
-    ups[face].width = width;
-    ups[face].height = height;
-    ups[face].fp_depth = 1;
-    ups[face].row_width_texels = row_width_texels;
-    ups[face].subresource = 0;
-    ups[face].array_index = static_cast<u32>(face);
+  std::vector<BCSubresourceUpload> ups(6 * level_count);
+  for (u32 face = 0; face < 6; ++face) {
+    for (u32 level = 0; level < level_count; ++level) {
+      const BCMipLevel &lv = faces[face][level];
+      BCSubresourceUpload &up = ups[face * level_count + level];
+      up.data = lv.data;
+      up.size = lv.size;
+      up.width = lv.width;
+      up.height = lv.height;
+      up.fp_depth = 1;
+      up.row_width_texels = lv.row_width_texels;
+      up.subresource = level;
+      up.array_index = face;
+    }
   }
-  (void)staging_row_bytes;
-  return BuildBCMirrorCore(d, ups, 6);
+  return BuildBCMirrorCore(d, ups.data(), u32(ups.size()));
 }
 
 GuestTexture *BuildBCMirrorTextureVolume(

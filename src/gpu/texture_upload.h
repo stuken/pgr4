@@ -51,12 +51,11 @@ GuestTexture *BuildHostTexture2DMips(
     plume::RenderFormat format, u32 width, u32 height, const BCMipLevel *levels,
     u32 level_count, const plume::RenderComponentMapping *mapping = nullptr);
 
-// Face rows padded to staging_row_bytes. arraySize=6 CUBE.
+// arraySize=6 CUBE. faces[f] holds level_count levels of face f, the base
+// first.
 GuestTexture *BuildBCMirrorTextureCube(u32 width, u32 height, u32 format,
-                                       const u8 *faces[6],
-                                       size_t face_byte_size,
-                                       u32 staging_row_bytes,
-                                       u32 row_width_texels);
+                                       const BCMipLevel *const faces[6],
+                                       u32 level_count);
 
 // Slices contiguous in slice_data, slice 0 first, uploaded in one copy.
 GuestTexture *BuildBCMirrorTextureVolume(u32 width, u32 height, u32 depth,

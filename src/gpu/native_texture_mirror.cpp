@@ -316,26 +316,43 @@ GuestTexture *BuildVolumeMirror(const MirrorLayout &L, const u8 *src,
   return tex;
 }
 
+void GatherTiledLevels(const MirrorLayout &L,
+                       const xe::xe_gpu_texture_fetch_t &fetch,
+                       std::vector<u8> &base_staging,
+                       std::vector<std::vector<u8>> &level_bufs,
+                       std::vector<BCMipLevel> &mip_levels, u32 face = 0);
+
 // 6 faces packed consecutively from the base address, per-face stride being
 // the exact tiled mip-0 footprint with no mip tail or padding between faces.
+// The mips hold all six faces per level at mip_address. The building shaders
+// (psSceneDiffuse) pick the environment cube's level from the material map's
+// gloss, so brick reads a blurred low mip and glass the sharp base; with the
+// base alone, brick reflected the cube as sharply as glass.
 GuestTexture *BuildCubeMirror(const MirrorLayout &L, const u8 *src,
+                              const xe::xe_gpu_texture_fetch_t &fetch,
                               u32 guest_va) {
   const size_t face_stride =
       size_t(L.aligned_w) * size_t(L.aligned_h) * size_t(L.bytes_per_block);
   const size_t face_size = FaceStagingSize(L);
 
   std::vector<u8> face_bufs[6];
-  const u8 *face_ptrs[6];
+  std::vector<std::vector<u8>> level_bufs[6];
+  std::vector<BCMipLevel> levels[6];
+  const BCMipLevel *face_levels[6];
   for (int face = 0; face < 6; ++face) {
     face_bufs[face].assign(face_size, 0u);
     UntileFace(L, src + size_t(face) * face_stride, face_bufs[face].data(),
                L.pack_off_x, L.pack_off_y);
-    face_ptrs[face] = face_bufs[face].data();
+    GatherTiledLevels(L, fetch, face_bufs[face], level_bufs[face], levels[face],
+                      u32(face));
+    face_levels[face] = levels[face].data();
   }
+  PGR4_DEBUG_FIRST(16, "native cube va=0x{:08X} {}x{} fmt=0x{:X} levels={}",
+                   guest_va, L.width, L.height, u32(L.format),
+                   levels[0].size());
 
   GuestTexture *tex = BuildBCMirrorTextureCube(
-      L.width, L.height, u32(L.format), face_ptrs, face_size,
-      L.staging_row_bytes, L.row_width_texels);
+      L.width, L.height, u32(L.format), face_levels, u32(levels[0].size()));
   if (!tex) {
     PGR4_WARN("native texture va=0x{:08X}: cube mirror build failed "
             "({}x{} fmt=0x{:X})",
@@ -347,12 +364,13 @@ GuestTexture *BuildCubeMirror(const MirrorLayout &L, const u8 *src,
 // Levels 1..mip_max live at mip_address, with a packed tail for the <=16-texel
 // levels. nullptr leaves the caller on the single-level path.
 // levels[0] is the untiled base; the mips below it are untiled into
-// level_bufs, when the texture has a chain.
+// level_bufs, when the texture has a chain. A cube's levels are those of one
+// face, which sits face * array_slice_stride_bytes into each level.
 void GatherTiledLevels(const MirrorLayout &L,
                        const xe::xe_gpu_texture_fetch_t &fetch,
                        std::vector<u8> &base_staging,
                        std::vector<std::vector<u8>> &level_bufs,
-                       std::vector<BCMipLevel> &mip_levels) {
+                       std::vector<BCMipLevel> &mip_levels, u32 face) {
   mip_levels.clear();
   mip_levels.push_back({base_staging.data(), base_staging.size(), L.width,
                         L.height, L.row_width_texels});
@@ -363,7 +381,10 @@ void GatherTiledLevels(const MirrorLayout &L,
     return;
 
   const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
-      xe::DataDimension::k2DOrStacked, fetch.pitch, L.width, L.height, 1u,
+      fetch.dimension == xe::DataDimension::kCube
+          ? xe::DataDimension::kCube
+          : xe::DataDimension::k2DOrStacked,
+      fetch.pitch, L.width, L.height, 1u,
       /*is_tiled=*/true, L.format,
       /*has_packed_levels=*/fetch.packed_mips != 0u, /*has_base=*/true,
       mip_max_level);
@@ -389,7 +410,8 @@ void GatherTiledLevels(const MirrorLayout &L,
     const u32 storage_level = packed ? layout.packed_level : lvl;
     const tu::TextureGuestLayout::Level &sl = layout.mips[storage_level];
     const u32 pitch_blocks = sl.row_pitch_bytes / L.bytes_per_block;
-    const u8 *level_src = mip_src + layout.mip_offsets_bytes[storage_level];
+    const u8 *level_src = mip_src + layout.mip_offsets_bytes[storage_level] +
+                          size_t(face) * sl.array_slice_stride_bytes;
 
     u32 px = 0, py = 0, pz = 0;
     if (packed) {
@@ -402,7 +424,8 @@ void GatherTiledLevels(const MirrorLayout &L,
       for (int bx = 0; bx < lwb; ++bx) {
         const i32 so = tu::GetTiledOffset2D(i32(px) + bx, i32(py) + by,
                                             pitch_blocks, L.bpb_log2);
-        if (so < 0 || u32(so) + L.bytes_per_block > sl.level_data_extent_bytes)
+        if (so < 0 ||
+            u32(so) + L.bytes_per_block > sl.array_slice_data_extent_bytes)
           continue;
         u8 *db =
             dst.data() + size_t(by) * dst_row + size_t(bx) * L.bytes_per_block;
@@ -582,7 +605,7 @@ GuestTexture *GetOrCreateNativeMirror(u32 guest_va) {
     tex = BuildVolumeMirror(layout, src, fetch, guest_va);
     break;
   case xe::DataDimension::kCube:
-    tex = BuildCubeMirror(layout, src, guest_va);
+    tex = BuildCubeMirror(layout, src, fetch, guest_va);
     break;
   default:
     tex = Build2DMirror(layout, src, fetch, guest_va);
