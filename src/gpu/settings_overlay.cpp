@@ -207,6 +207,10 @@ void SettingsOverlay::OnDraw(ImGuiIO & /*io*/) {
   Checkbox("16-bit output", "pgr4_output_16bit");
   Checkbox("Console display correction", "pgr4_display_correction");
 
+  Section("Crowds");
+  Slider("Crowd draw distance", "pgr4_crowd_draw_distance", "x%.2f");
+  Slider("Crowd model distance", "pgr4_crowd_detail_distance", "x%.2f");
+
   Section("Camera");
   Slider("Bumper camera height", "pgr4_bumper_camera_height", "+%.2f m");
 

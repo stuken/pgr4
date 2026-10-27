@@ -92,6 +92,7 @@ set(PGR4_COMMON_SOURCES
     src/core/memory_helpers.cpp
     src/core/settings.cpp
     src/game/camera.cpp
+    src/game/crowds.cpp
     src/game/garage_walk.cpp
     src/platform/guest_abort_log.cpp
     src/platform/input_script.cpp)

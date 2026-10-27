@@ -23,7 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
-| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu), and the garage walk camera now moves above 30 fps. See Phase 7. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu), and the garage walk camera now moves above 30 fps, and `pgr4_crowd_draw_distance` and `pgr4_crowd_detail_distance` draw the crowds further out (checked on a London course). See Phase 7. |
 
 ## What we know about PGR4
 
@@ -1419,7 +1419,7 @@ Mostly pgr3's Phase 6, redone for PGR4's passes:
 
 ### Phase 7: User-facing polish
 
-Five items for players rather than for bring-up. Only the menu's console
+Six items for players rather than for bring-up. Only the menu's console
 defaults change what a frame looks like at the defaults.
 
 1. **Renderer diagnostics at the debug level.** The SDK's default
@@ -1692,6 +1692,61 @@ defaults change what a frame looks like at the defaults.
      whole. Steps stay under 5 cm, well inside the 0.3 m collision radius.
      The stick now also walks below two thirds at 30 fps, which the console
      ignored. Checked in game at 60 fps.
+6. **Crowd draw distance** (2026-10-27). Crowds on long straights stop
+   short of the far end.
+   - **How the game picks them:** the crowd scene build (`sub_82404ED8`,
+     once per view) walks the course's crowd cells (414 in St Petersburg).
+     It keeps the ones the camera's PVS row marks visible (a bit per cell)
+     and that pass the frustum test. For each, it measures the distance from
+     the eye to the cell's box, times tan(fov / 2) (the view's `+108`), so
+     zooming in reaches further. Call that `d`.
+     - **Models:** a cell with `d < 10 * 2.5` draws its people as skinned
+       models, with their flags. 2.5 is a constant (the cells' `+52`, from
+       their constructor `sub_824043E8`).
+     - **Sprites:** a cell with `d <` the cells' `+48` draws as sprites (the
+       game renders them itself, `vs/psCrowdGenericSpriteGen`). Its flags
+       draw only inside `Crowds.Flags.FlagDrawDistance` (50).
+     - **Nothing** draws beyond `+48`.
+   - **Where `+48` comes from:** the per-frame update (`sub_82402818`) sets
+     it from the course environment's `CrowdSettings.DrawDistance`, or 120
+     when the environment has none. `CrowdSettings` is GameData reflection
+     data (`GameData.cpp`). Its fields are `Name`, the three `PercentWith*`,
+     `DrawDistance` at `+0x10` and `MaxCrowdDepth` at `+0x14`, and it hangs
+     off `EnvironmentSettings` at `+0x48`. St Petersburg sets 300. With the
+     race view's tan(fov / 2) of 0.316, that is about 950 m of sprites and
+     80 m of models.
+   - **The crowd update** (`sub_823E3B40`, from `sub_823E9650`) uses the same
+     `10 * +52`. It flags a cell far once every view is that far away, and
+     passes the flag to each block's update.
+   - **Other tweakables:** `Crowds.Render.LODScalingFactor` (1.2) only picks
+     the model LOD inside the model range. The renderer's metric is
+     `d * (1 / 1.2) + the row's bias` (`sub_823FCA18`, `sub_823FE980`), and
+     a block's mesh is `metric / 3`, clamped to its last LOD
+     (`sub_823FDCA8`). `Crowds.Layout.RowLODBias` sets each row's bias.
+   - **Done:** `src/game/crowds.cpp`, four mid-asm hooks in
+     `config/game.toml`. Both cvars apply live and are in the F4 menu
+     under *Crowds*. The game's own fields keep their values.
+     - `pgr4_crowd_draw_distance` (1 to 4, default 1) scales `+48` and the
+       flag range as the scene build loads them.
+     - `pgr4_crowd_detail_distance` (1 to 4, default 1) scales the model
+       range, and the update's range with it, so no cell drawn as models is
+       updated as far.
+     - **Sprite list:** the sprite path appends each cell to a list in the
+       crowd renderer (count `+0x1E5C8`, 2,300 entries to `+0x209BC`) with no
+       bounds check. `CrowdRenderer_AddSpriteCell` replaces the append with a
+       checked one. A course's cells are each added once a view, so 414 can't
+       fill it.
+     - **Model blocks:** these go to a ring of 880 (`+8868`), whose draw takes
+       the last 880. `CrowdRenderer_AddModelBlock` logs the peak at the debug
+       level, to size the model range.
+   - **Checked:** the St Petersburg day race at the defaults and at 3x both
+     (`scratch/runs/crowd_base`, `crowd_x3`). The far grandstands were
+     already drawn there, and 3x adds distant flags. On a London course the
+     crowds along long straights now show much further out (checked by
+     hand).
+   - **Still open:** the model ring's peak at a raised model range; whether
+     "far" skips the block's animation; and the PVS, which drops cells the
+     camera's cell can't see, whatever the distance.
 
 ---
 
