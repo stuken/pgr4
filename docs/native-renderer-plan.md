@@ -23,7 +23,7 @@ there for finding the PGR4 equivalent by behaviour, not to reuse.
 | 4. D3D identification (XDK 6132) | **Exit met; a day race with weather still to trace.** Every function pgr3's renderer hooks has a 6132 address, and `config/d3d.toml` and `xapi.toml` name 86 functions with no codegen warnings. `src/gpu/d3d.h` is rewritten for 6132 (a 0x5780-byte device, 24-byte resources, the register shadows as blocks) and checked against a live race through the ported `pgr4_trace_frame`, which also filled in the race pass table. Command buffers exist but are off in retail (`Vehicle.DisableCommandBuffers`), nothing bypasses the constant shadow that XenosRecomp doesn't cover, and the main scene uses **predicated tiling in every race frame**. Night, rain, snow, bike and in-car races are traced too (a Custom Match script reaches each): night drops the shadow maps, rain and snow also drop bloom, and the in-car view swaps the environment cube for a rear-view mirror drawn into the main targets and partially resolved. Left: a day race in rain or fog (London's menus drop timed presses). See Phase 4 findings. |
 | 5. Native renderer bring-up | **In progress.** pgr3's renderer is ported and boots through the front end into a race: every shader builds, the Bink movies play, the menus match xenos, and the race scene renders with predicated tiling, the motion blur, damage-deformed cars and correctly filtered roads. Day, night, snow, bike and in-car races are checked natively, the fetch constant's LOD bias and the fetch instructions' filter overrides are modelled, and `pgr4_shadow_scale`, `pgr4_msaa`, `pgr4_fxaa` and `pgr4_anisotropy` are checked in a day race. The input script now waits on the front end's content check, so native runs reach the race at either frame rate. Left: a rain race and the rest of the exit list. See Phase 5 findings. |
 | 6. Hardening and performance | **Started.** A performance audit at 3x (Phase 6 findings) found host scale copies redone for every draw: 45 of the bonnet camera's 56 ms of GPU a frame. A copy cache (`pgr4_scale_copy_cache`) brings it to under 10 ms. `pgr4_perf_gpu` times passes on the GPU. Items 2, 3, 4 and 5 are done too (a draw's CPU 2.92 to 2.73 us; the road reflection view renders at `pgr4_reflection_scale`); earlier submission is left. |
-| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F4 opens a short settings menu (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu), and the garage walk camera now moves above 30 fps, and `pgr4_crowd_draw_distance` and `pgr4_crowd_detail_distance` draw the crowds further out (checked on a London course). See Phase 7. |
+| 7. User-facing polish | **Started.** Renderer diagnostics are at the debug log level (a race logs only the adapter, the scale and one occlusion note), and F1 opens a short settings menu with a Quit game button (built, not yet checked on screen; its resolution and reflection scales default to the console's 1x), and `pgr4_bumper_camera_height` raises the bumper view (checked in game, with a slider in the menu), and the garage walk camera now moves above 30 fps, and `pgr4_crowd_draw_distance` and `pgr4_crowd_detail_distance` draw the crowds further out (checked on a London course). See Phase 7. |
 
 ## What we know about PGR4
 
@@ -1463,7 +1463,7 @@ defaults change what a frame looks like at the defaults.
      and the input script's own markers. With `--log_level=debug`
      (`scratch/runs/log_debug`) the demoted lines are back. The xenos build
      compiles; its log is not yet checked.
-2. **A short F4 settings menu.** F4 is the SDK's generic `SettingsDialog`
+2. **A short settings menu (F1; first built on F4).** F4 is the SDK's generic `SettingsDialog`
    (`rex_app.cpp:420`, `bind_settings`). It lists every registered cvar by
    category: the SDK's own plus about 55 `pgr4_*`, most of them
    `pgr4_debug_*`, trace, dump and switches kept from the Phase 6 audit. The
@@ -1505,7 +1505,7 @@ defaults change what a frame looks like at the defaults.
      (`kInitOnly` is greyed out with "restart"). For each hot-reload entry,
      confirm that a change made while the game runs actually reaches
      `gpu::Settings` and the frame.
-   - **Check:** F4 opens the short menu in the front end and in a race. Each
+   - **Check:** F1 opens the short menu in the front end and in a race. Each
      live control changes the picture. Fullscreen toggles both ways during a
      race, with no stretched or stale back buffer and the menu still drawn
      at the new size. Saving writes `pgr4.toml`, and "All settings..."
@@ -1542,6 +1542,26 @@ defaults change what a frame looks like at the defaults.
        purpose: `pgr4_fps_limit` 60 (the console ran at 30) and
        `pgr4_output_16bit` on (the console's back buffer is 8 bits). A
        `pgr4.toml` that sets either scale keeps its value.
+     - **Moved to F1, with Quit** (2026-10-27). `bind_pgr4_settings` now
+       defaults to F1 instead of taking over the SDK bind's F4. F1 is free:
+       the SDK registers only F3 (debug overlay), Backtick (console), F4
+       (settings) and F7 (achievements) in `rex_app.cpp`, nothing else in
+       the SDK handles F1, and no controller keybind uses it.
+     - **F4 is the SDK's again.** The "All settings..." button is gone, and
+       with it the reason to take over `bind_settings`: a second
+       `SettingsDialog` from the button would have drawn into the same
+       `Settings##rex` window as the SDK's private one. `bind_settings` is
+       now left untouched, so F4 (or whatever it is rebound to) opens the
+       SDK's full dialog as before. The menu's bottom row shows the key as a
+       greyed hint ("F4: all settings"), read from the cvar each frame.
+     - **Quit game.** The bottom row gains a right-aligned "Quit game"
+       button that opens a modal confirmation (Quit / Cancel, Escape
+       cancels). The click lands inside the ImGui draw, which runs nested in
+       Present's synchronous call to the UI thread, and `ui_drawer.h` says a
+       quit from there must be deferred. So `Pgr4App` posts
+       `RequestShutdown(ShutdownReason::MenuQuit)` with
+       `CallInUIThreadDeferred`, and the ordered exit runs from the next pump
+       like a window close. Both exes build; not yet checked on screen.
 3. **The bumper camera's height.** The bumper view sits too low in game.
    Find what sets it, then add an offset cvar.
    - **What is known:** camera placement is data, not code constants. The
@@ -1576,7 +1596,7 @@ defaults change what a frame looks like at the defaults.
      of the car data, so every car moves by the same amount and 0 is the
      original game. It belongs to the game code, not the renderer, so it goes
      in `config/` and a new `src/game/camera.cpp` that builds in both
-     configurations, and it is listed in the F4 menu under a *Camera* group.
+     configurations, and it is listed in the F1 menu under a *Camera* group.
    - **Watch for:** the bumper view's near plane and its bonnet or bumper
      mesh culling, which may assume the original height (the car's own nose
      clipping into view). Also the rear-view mirror pass, if this view has
@@ -1611,7 +1631,7 @@ defaults change what a frame looks like at the defaults.
        bumper placement) and mode 768 call it with a constant 0.5.
    - **Done:** `src/game/camera.cpp` hooks `Camera_PlaceBumper` and adds
      `pgr4_bumper_camera_height` (0 to 1 m, default 0) to `f1` only while
-     the camera's mode is 257. The value is read every frame, so the F4
+     the camera's mode is 257. The value is read every frame, so the F1
      menu's *Camera* slider applies live. A debug-level line logs each
      camera mode that reaches the placement.
    - **Checked** (2026-10-25). In the Tokyo race the second LB press gives
@@ -1724,7 +1744,7 @@ defaults change what a frame looks like at the defaults.
      a block's mesh is `metric / 3`, clamped to its last LOD
      (`sub_823FDCA8`). `Crowds.Layout.RowLODBias` sets each row's bias.
    - **Done:** `src/game/crowds.cpp`, four mid-asm hooks in
-     `config/game.toml`. Both cvars apply live and are in the F4 menu
+     `config/game.toml`. Both cvars apply live and are in the F1 menu
      under *Crowds*. The game's own fields keep their values.
      - `pgr4_crowd_draw_distance` (1 to 4, default 1) scales `+48` and the
        flag range as the scene build loads them.
